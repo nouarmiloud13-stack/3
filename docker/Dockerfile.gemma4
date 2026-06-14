@@ -1,0 +1,108 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# docker/Dockerfile.gemma4 — llama.cpp compilé depuis source (CPU-only + audio)
+#
+# OBJECTIF :
+#   Construire llama-server avec support /v1/audio/transcriptions
+#   (Speech-to-Text via Gemma4 E2B multimodal) pour Raspberry Pi 4 / Codespaces.
+#
+# POURQUOI PAS L'IMAGE OFFICIELLE ghcr.io/ggml-org/llama.cpp:server ?
+#   L'image pré-compilée ne contient pas libsndfile1 nécessaire au décodage WAV.
+#   Compiler depuis source garantit le support audio + contrôle des flags CPU.
+#
+# CPU-ONLY (pas de CUDA / Metal) — prévu pour RPi4 et GitHub Codespaces.
+#
+# OPTIMISATIONS CPU activées :
+#   AVX, AVX2, F16C, FMA  →  accélère les opérations matricielles sur x86-64.
+#   Sur RPi4 (ARM Cortex-A72) ces flags sont ignorés silencieusement par CMake.
+#
+# CONTRAINTES RAM :
+#   Gemma4 E2B Q4_K_M   ≈ 3.5 GB  (model)
+#   mmproj bf16          ≈ 0.4 GB  (projection multimodale)
+#   Total                ≈ 4.0 GB  → limite 5G dans docker-compose.yml OK
+#
+# VÉRIFICATIONS BUILD (readelf remplace 'file' — binutils inclus dans build-essential) :
+#   readelf -h  → type ELF + architecture
+#   ldd guard   → confirme BUILD_SHARED_LIBS=OFF (aucune libllama.so résiduelle)
+#
+# Emplacement attendu par docker-compose.yml :
+#   docker/Dockerfile.gemma4
+#   (context: .. → racine projet)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Stage 1 : builder ─────────────────────────────────────────────────────────
+FROM ubuntu:22.04 AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    curl \
+    ca-certificates \
+    libcurl4-openssl-dev \
+    libsndfile1-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Clone llama.cpp (depth=1 pour minimiser la taille du contexte de build)
+RUN git clone --depth=1 https://github.com/ggml-org/llama.cpp.git .
+
+# Configuration CMake :
+#   BUILD_SHARED_LIBS=OFF  →  binaire statique, pas de dépendance libllama.so
+#   LLAMA_CURL=ON          →  support téléchargement modèle via URL (facultatif)
+#   AVX/AVX2/F16C/FMA=ON   →  optimisations SIMD x86-64 (ignorés sur ARM)
+#   Pas de GGML_CUDA / GGML_METAL  →  CPU-only
+RUN cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DLLAMA_CURL=ON \
+    -DGGML_AVX=ON \
+    -DGGML_AVX2=ON \
+    -DGGML_F16C=ON \
+    -DGGML_FMA=ON \
+  && cmake --build build \
+    --config Release \
+    --target llama-server \
+    -j$(nproc)
+
+# ── Vérification du binaire ────────────────────────────────────────────────────
+# readelf remplace 'file' (non présent dans ubuntu:22.04 slim)
+# binutils est inclus via build-essential → readelf toujours disponible
+RUN ls -lh build/bin/llama-server \
+ && readelf -h build/bin/llama-server | grep -E "Type:|Machine:" \
+ && echo "✅ ELF binary OK" \
+ && (ldd build/bin/llama-server 2>&1 | grep -q "libllama" \
+     && echo "❌ ERREUR: libllama trouvée — BUILD_SHARED_LIBS=OFF a échoué" && exit 1 \
+     || echo "✅ Static linking confirmé — aucune libllama.so")
+
+# ── Stage 2 : runtime ─────────────────────────────────────────────────────────
+FROM ubuntu:22.04 AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Dépendances runtime uniquement (pas les headers -dev) :
+#   libsndfile1   →  décodage WAV/FLAC/OGG pour /v1/audio/transcriptions
+#   libgomp1      →  OpenMP (parallélisme CPU dans llama.cpp)
+#   libcurl4      →  libcurl runtime (LLAMA_CURL=ON)
+#   curl          →  healthcheck dans docker-compose.yml
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsndfile1 \
+    libgomp1 \
+    libcurl4 \
+    ca-certificates \
+    curl \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copier uniquement le binaire compilé depuis le stage builder
+COPY --from=builder /build/build/bin/llama-server /usr/local/bin/llama-server
+
+# Vérifier les dépendances dynamiques du binaire final
+RUN chmod +x /usr/local/bin/llama-server \
+ && ldd /usr/local/bin/llama-server
+
+# Port llama-server (cohérent avec docker-compose.yml et GEMMA4_SERVER_PORT)
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/llama-server"]
