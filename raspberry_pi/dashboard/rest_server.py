@@ -1,720 +1,1848 @@
-#!/usr/bin/env python3
-"""
-rest_server.py — API REST Flask pour le système IoT GNL
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GNL Edge Monitor — Système IoT</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:     #060d1a; --bg2: #0a1628; --bg3: #0f1f38; --bg4: #071020;
+  --accent: #00d4ff; --accent2: #00ff9d;
+  --danger: #ff4060; --warn: #ffb020; --ok: #00ff9d;
+  --border: rgba(0,212,255,0.18); --border2: rgba(0,212,255,0.08);
+  --text:   #cde8ff; --muted: #4a7fa8;
+  --mono:   'Share Tech Mono', monospace; --sans: 'Exo 2', sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,212,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,0.03) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+body::after{content:'';position:fixed;top:-100%;left:0;right:0;height:200px;background:linear-gradient(transparent,rgba(0,212,255,0.04),transparent);animation:scan 6s linear infinite;pointer-events:none;z-index:1}
+@keyframes scan{to{top:110%}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse-ring{0%,100%{box-shadow:0 0 0 0 rgba(0,212,255,.4)}50%{box-shadow:0 0 20px 8px rgba(0,212,255,.1)}}
 
-Sécurité admin :
-  - Clé AES-256 lue depuis .env (AES_SECRET_KEY)
-  - Mot de passe admin chiffré AES-256-GCM au démarrage
-  - Vérification via hmac.compare_digest (anti timing attack)
-  - JWT Bearer token pour toutes les routes protégées
+/* ════ MIC BUTTON ════ */
+.chat-mic-btn {
+  background: rgba(0,212,255,.08);
+  border: 1px solid rgba(0,212,255,.25);
+  border-radius: 8px;
+  padding: 10px 13px;
+  color: var(--accent);
+  font-size: 17px;
+  cursor: pointer;
+  transition: all .2s;
+  flex-shrink: 0;
+  line-height: 1;
+  position: relative;
+  min-width: 44px;
+  text-align: center;
+}
+.chat-mic-btn:hover:not(:disabled) {
+  background: rgba(0,212,255,.18);
+  box-shadow: 0 0 12px rgba(0,212,255,.2);
+}
+.chat-mic-btn:disabled {
+  opacity: .35;
+  cursor: not-allowed;
+}
+/* Animation pulse rouge pendant l'enregistrement */
+.chat-mic-btn.recording {
+  background: rgba(255,64,96,.12);
+  border-color: var(--danger);
+  color: var(--danger);
+  animation: pulse-mic 1.1s ease-in-out infinite;
+}
+@keyframes pulse-mic {
+  0%,100% { box-shadow: 0 0 0 0 rgba(255,64,96,.55); }
+  50%      { box-shadow: 0 0 0 9px rgba(255,64,96,0); }
+}
+/* Indicateur de durée d'enregistrement */
+.mic-timer {
+  display: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--danger);
+  letter-spacing: 1px;
+  padding: 0 8px;
+  align-self: center;
+  flex-shrink: 0;
+  animation: blink 1s ease-in-out infinite;
+}
+.mic-timer.visible { display: block; }
 
-Endpoints :
-  GET  /api/v1/status                → état général du système
-  GET  /api/v1/data/latest           → dernières mesures
-  GET  /api/v1/ai/scores             → scores IA courants
-  GET  /api/v1/ai/diagnostic         → diagnostic Smart AI
-  POST /api/v1/ai/chat               → chatbot Gemma
-  POST /api/v1/audio/transcribe      → Speech-to-Text via Gemma4 (STT)
-  POST /api/v1/cmd/pompe             → commande pompe
-  POST /api/v1/cmd/vanne             → commande vanne
-  POST /api/v1/cmd/esd               → arrêt d'urgence
-  GET  /api/v1/alerts                → journal alertes
-  GET  /health                       → health check
-"""
+.page{display:none;min-height:100vh;position:relative;z-index:2}
+.page.active{display:flex}
 
-import base64
-import hmac as hmac_lib
-import json
-import logging
-import os
-import time
-from datetime import datetime, timezone
-from functools import wraps
-from threading import Lock
+/* ════ LOGIN ════ */
+#login-page{align-items:center;justify-content:center;flex-direction:column;padding:2rem}
+.login-container{width:100%;max-width:420px}
+.login-logo{text-align:center;margin-bottom:2.5rem}
+.hex-ring{width:80px;height:80px;border:2px solid var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto;animation:pulse-ring 3s ease-in-out infinite;position:relative}
+.hex-ring::before{content:'';position:absolute;inset:-8px;border:1px solid rgba(0,212,255,0.2);border-radius:50%;animation:pulse-ring 3s ease-in-out infinite .5s}
+.hex-icon{font-family:var(--mono);font-size:28px;color:var(--accent)}
+.login-title{font-family:var(--mono);font-size:22px;color:var(--accent);letter-spacing:4px;text-transform:uppercase;margin-bottom:4px}
+.login-sub{font-size:12px;color:var(--muted);letter-spacing:2px;font-family:var(--mono)}
+.login-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:2rem;position:relative;overflow:hidden}
+.login-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+.field-group{margin-bottom:1.25rem}
+.field-label{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:2px;margin-bottom:8px;display:block}
+.field-wrap{position:relative;display:flex;align-items:center}
+.field-icon{position:absolute;left:14px;font-size:16px;color:var(--muted);font-family:var(--mono);z-index:1}
+.field-input{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:12px 14px 12px 42px;color:var(--text);font-family:var(--mono);font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s}
+.field-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,212,255,.08)}
+.field-input::placeholder{color:#2a4a6a}
+.role-select{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1.5rem}
+.role-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:10px;cursor:pointer;text-align:center;transition:all .2s;color:var(--muted);font-family:var(--mono);font-size:11px;letter-spacing:1px}
+.role-btn:hover{border-color:var(--border);color:var(--text)}
+.role-btn.selected{border-color:var(--accent);background:rgba(0,212,255,.06);color:var(--accent)}
+.role-icon{font-size:20px;display:block;margin-bottom:4px}
+.login-btn{width:100%;background:transparent;border:1px solid var(--accent);border-radius:8px;padding:14px;color:var(--accent);font-family:var(--mono);font-size:14px;letter-spacing:3px;cursor:pointer;text-transform:uppercase;position:relative;overflow:hidden;transition:all .3s}
+.login-btn::before{content:'';position:absolute;top:0;left:-100%;width:100%;height:100%;background:linear-gradient(90deg,transparent,rgba(0,212,255,.15),transparent);transition:left .4s}
+.login-btn:hover::before{left:100%}
+.login-btn:hover{background:rgba(0,212,255,.08);box-shadow:0 0 20px rgba(0,212,255,.2)}
+.login-btn:disabled{opacity:.4;cursor:not-allowed}
+.login-error{background:rgba(255,64,96,.1);border:1px solid rgba(255,64,96,.3);border-radius:6px;padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--danger);margin-top:1rem;display:none}
+.status-bar{display:flex;align-items:center;gap:8px;margin-top:1.5rem;padding:10px 14px;background:var(--bg3);border-radius:8px;border:1px solid var(--border2)}
+.status-dot{width:6px;height:6px;border-radius:50%;animation:blink 2s ease-in-out infinite}
+.dot-green{background:var(--accent2)}.dot-blue{background:var(--accent);animation-delay:.6s}.dot-warn{background:var(--warn);animation-delay:1.2s}
+.status-txt{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;flex:1}
+.ngrok-badge{margin-top:.75rem;padding:6px 12px;background:rgba(0,212,255,.06);border:1px solid var(--border2);border-radius:6px;font-family:var(--mono);font-size:10px;color:var(--muted);text-align:center;letter-spacing:1px}
+.ngrok-badge span{color:var(--accent)}
+.loading-bar{height:2px;background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),transparent);background-size:200% 100%;animation:loading 1.5s linear;margin-bottom:1.5rem}
+@keyframes loading{from{background-position:200%}to{background-position:-200%}}
 
-from flask import Flask, jsonify, request, abort, send_from_directory
-from flask_cors import CORS
-import jwt
+/* ════ DASHBOARD LAYOUT ════ */
+#dash-page{flex-direction:column}
+.topnav{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:var(--bg2);border-bottom:1px solid var(--border2);flex-shrink:0;z-index:10}
+.nav-brand{display:flex;align-items:center;gap:12px}
+.nav-dot{width:8px;height:8px;border-radius:50%;background:var(--accent2);animation:blink 2s infinite}
+.nav-title{font-family:var(--mono);font-size:14px;color:var(--accent);letter-spacing:2px}
+.nav-right{display:flex;align-items:center;gap:16px}
+.nav-user{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.user-avatar{width:30px;height:30px;border-radius:50%;background:rgba(0,212,255,.1);border:1px solid var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--accent)}
+.logout-btn{background:transparent;border:1px solid rgba(255,64,96,.3);border-radius:6px;padding:6px 12px;color:var(--danger);font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:1px;transition:all .2s}
+.logout-btn:hover{background:rgba(255,64,96,.08);border-color:var(--danger)}
+.api-indicator{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:20px;border:1px solid var(--border2)}
+.api-ok{color:var(--accent2);border-color:rgba(0,255,157,.2)}.api-err{color:var(--danger);border-color:rgba(255,64,96,.2)}
+.dash-body{display:flex;flex:1;overflow:hidden}
 
-# ── requests — proxy HTTP vers llama.cpp ──────────────────────────────────────
-try:
-    import requests as _http
-    _HTTP_AVAILABLE = True
-except ImportError:
-    _HTTP_AVAILABLE = False
+/* ════ SIDEBAR ════ */
+.sidebar{width:210px;background:var(--bg2);border-right:1px solid var(--border2);padding:1rem 0;flex-shrink:0;overflow-y:auto}
+.sidebar-item{display:flex;align-items:center;gap:10px;padding:10px 20px;font-family:var(--mono);font-size:12px;color:var(--muted);cursor:pointer;transition:all .15s;letter-spacing:1px;border-left:2px solid transparent}
+.sidebar-item:hover{color:var(--text);background:rgba(0,212,255,.04)}
+.sidebar-item.active{color:var(--accent);border-left-color:var(--accent);background:rgba(0,212,255,.06)}
+.sidebar-icon{font-size:16px;width:20px;text-align:center}
+.sidebar-section{font-family:var(--mono);font-size:9px;color:#1e3a5f;letter-spacing:3px;padding:16px 20px 6px;text-transform:uppercase}
+.sidebar-badge{margin-left:auto;background:rgba(255,64,96,.15);color:var(--danger);border-radius:20px;font-size:9px;padding:1px 7px;font-family:var(--mono)}
 
-# ── AES-256-GCM ───────────────────────────────────────────────────────────────
-try:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    _AES_AVAILABLE = True
-except ImportError:
-    _AES_AVAILABLE = False
+/* ════ MAIN CONTENT ════ */
+.main-content{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.view{display:none;flex-direction:column;gap:16px;animation:fadeIn .3s ease}
+.view.active{display:flex}
 
-log = logging.getLogger("gnl.api")
+/* ════ METRIC CARDS ════ */
+.metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.metric-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:14px 16px;position:relative;overflow:hidden;transition:border-color .2s,transform .1s}
+.metric-card:hover{border-color:var(--border);transform:translateY(-1px)}
+.metric-card::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px}
+.mc-green::after{background:var(--accent2)}.mc-blue::after{background:var(--accent)}.mc-warn::after{background:var(--warn)}.mc-danger::after{background:var(--danger)}
+.mc-label{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:2px;margin-bottom:8px}
+.mc-value{font-family:var(--mono);font-size:28px;font-weight:600;margin-bottom:4px}
+.mc-sub{font-size:11px;color:var(--muted)}
+.mc-green .mc-value{color:var(--accent2)}.mc-blue .mc-value{color:var(--accent)}.mc-warn .mc-value{color:var(--warn)}.mc-danger .mc-value{color:var(--danger)}
+.mc-badge{position:absolute;top:12px;right:12px;font-family:var(--mono);font-size:9px;padding:2px 8px;border-radius:20px}
+.badge-ok{background:rgba(0,255,157,.1);color:var(--accent2);border:1px solid rgba(0,255,157,.2)}
+.badge-warn{background:rgba(255,176,32,.1);color:var(--warn);border:1px solid rgba(255,176,32,.2)}
+.badge-danger{background:rgba(255,64,96,.1);color:var(--danger);border:1px solid rgba(255,64,96,.2)}
 
-# ── Config générale ────────────────────────────────────────────────────────────
-API_HOST    = os.environ.get("API_HOST", "0.0.0.0")
-API_PORT    = int(os.environ.get("API_PORT", "5000"))
-JWT_SECRET  = os.environ.get("GNL_JWT_SECRET", "hamel")
-JWT_ALGO    = "HS256"
-JWT_EXPIRY  = int(os.environ.get("JWT_EXPIRY_S", "3600"))
-API_TIMEOUT = int(os.environ.get("API_TIMEOUT_S", "3600"))
+/* ════ TANKS ════ */
+.tanks-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.tank-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px}
+.tank-title{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:2px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between}
+.tank-visual{display:flex;align-items:flex-end;gap:12px}
+.tank-cylinder{width:60px;height:120px;border:1px solid var(--border);border-radius:6px;position:relative;overflow:hidden;flex-shrink:0;background:var(--bg3)}
+.tank-fill{position:absolute;bottom:0;left:0;right:0;transition:height 1s ease}
+.fill-green{background:rgba(0,255,157,.3);border-top:1px solid var(--accent2)}
+.fill-blue{background:rgba(0,212,255,.2);border-top:1px solid var(--accent)}
+.fill-warn{background:rgba(255,176,32,.2);border-top:1px solid var(--warn)}
+.fill-danger{background:rgba(255,64,96,.2);border-top:1px solid var(--danger)}
+.tank-info{flex:1}
+.tank-pct{font-family:var(--mono);font-size:32px;font-weight:600;color:var(--accent)}
+.tank-stat{font-size:11px;color:var(--muted);margin-top:4px;font-family:var(--mono)}
+.net-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px}
+.net-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border2);font-family:var(--mono);font-size:12px}
+.net-row:last-child{border-bottom:none}
+.net-label{color:var(--muted);font-size:11px}
+.net-val{color:var(--text)}.net-ok{color:var(--accent2)}.net-active{color:var(--accent)}
 
-PUBLIC_URL = os.environ.get(
-    "PUBLIC_URL", "https://theology-custody-rocky.ngrok-free.dev"
-)
+/* ════ CHART ════ */
+.chart-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px}
+.chart-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.chart-title-txt{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:2px}
+canvas.chart{width:100%;height:140px;display:block}
 
-# ── Clé AES-256 depuis .env ───────────────────────────────────────────────────
-#
-# AES_SECRET_KEY dans .env = clé 32 bytes encodée en base64 (256 bits)
-#
-# Générer une nouvelle clé :
-#   python3 -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"
-#
-_AES_KEY_B64 = os.environ.get("AES_SECRET_KEY", "")
-_AES_SALT    = os.environ.get("AES_SALT", "gnl_usto_mb_2025").encode()
+/* ════ ALERTS ════ */
+.alerts-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px}
+.alert-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border2);font-family:var(--mono);font-size:12px}
+.alert-row:last-child{border-bottom:none}
+.alert-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.alert-time{color:var(--muted);font-size:11px;width:55px;flex-shrink:0}
+.alert-msg{flex:1;color:var(--text);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+.alert-level{font-size:9px;padding:2px 8px;border-radius:20px;flex-shrink:0}
+.bottom-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 
+/* ════ CONTROL PANEL ════ */
+.control-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.control-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:20px}
+.ctrl-title{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:2px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.ctrl-status{font-family:var(--mono);font-size:24px;font-weight:600;margin-bottom:16px;color:var(--accent)}
+.ctrl-btns{display:flex;gap:10px;flex-wrap:wrap}
+.ctrl-btn{font-family:var(--mono);font-size:12px;letter-spacing:2px;cursor:pointer;border-radius:8px;padding:10px 20px;transition:all .2s;border:1px solid;text-transform:uppercase}
+.btn-on{background:rgba(0,255,157,.08);border-color:var(--accent2);color:var(--accent2)}
+.btn-on:hover{background:rgba(0,255,157,.15);box-shadow:0 0 14px rgba(0,255,157,.2)}
+.btn-off{background:rgba(255,176,32,.08);border-color:var(--warn);color:var(--warn)}
+.btn-off:hover{background:rgba(255,176,32,.15)}
+.btn-open{background:rgba(0,212,255,.08);border-color:var(--accent);color:var(--accent)}
+.btn-open:hover{background:rgba(0,212,255,.15)}
+.btn-close{background:rgba(74,127,168,.08);border-color:var(--muted);color:var(--muted)}
+.btn-close:hover{background:rgba(74,127,168,.15);color:var(--text)}
+.ctrl-btn:disabled{opacity:.3;cursor:not-allowed}
+.esd-card{background:rgba(255,64,96,.04);border:1px solid rgba(255,64,96,.3);border-radius:10px;padding:20px;grid-column:1/-1}
+.esd-title{font-family:var(--mono);font-size:11px;color:var(--danger);letter-spacing:2px;margin-bottom:8px}
+.esd-desc{font-size:12px;color:var(--muted);margin-bottom:16px;font-family:var(--mono)}
+.btn-esd{background:rgba(255,64,96,.12);border:2px solid var(--danger);color:var(--danger);font-family:var(--mono);font-size:14px;letter-spacing:4px;cursor:pointer;border-radius:8px;padding:14px 32px;transition:all .2s;text-transform:uppercase}
+.btn-esd:hover{background:rgba(255,64,96,.25);box-shadow:0 0 20px rgba(255,64,96,.3)}
+.cmd-feedback{margin-top:12px;font-family:var(--mono);font-size:11px;padding:8px 12px;border-radius:6px;display:none}
+.cmd-ok{background:rgba(0,255,157,.1);color:var(--accent2);border:1px solid rgba(0,255,157,.2)}
+.cmd-err{background:rgba(255,64,96,.1);color:var(--danger);border:1px solid rgba(255,64,96,.2)}
 
-def _load_aes_key() -> bytes | None:
-    """
-    Charge la clé AES-256 depuis AES_SECRET_KEY dans .env.
-    Doit être 32 bytes encodés en base64 (256 bits = AES-256).
-    """
-    if not _AES_AVAILABLE:
-        log.warning(
-            "cryptography non installé — AES-256 désactivé\n"
-            "  → pip install cryptography"
-        )
-        return None
+/* ════ AI PANEL ════ */
+.ai-grid{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+.ai-diag-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:20px}
+.ai-severity{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;padding:4px 14px;border-radius:20px;margin-bottom:12px;letter-spacing:2px}
+.sev-info{background:rgba(0,212,255,.1);color:var(--accent);border:1px solid rgba(0,212,255,.2)}
+.sev-attention{background:rgba(255,176,32,.1);color:var(--warn);border:1px solid rgba(255,176,32,.2)}
+.sev-danger{background:rgba(255,64,96,.1);color:var(--danger);border:1px solid rgba(255,64,96,.2)}
+.sev-critique{background:rgba(255,64,96,.2);color:var(--danger);border:1px solid var(--danger);animation:blink 1s infinite}
+.ai-diag-text{font-family:var(--mono);font-size:14px;color:var(--text);line-height:1.6;margin-bottom:12px}
+.ai-details{font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.5;padding:10px;background:var(--bg3);border-radius:6px;white-space:pre-line}
+.ai-source{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:10px}
+.ai-source span{color:var(--accent)}
+.pred-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:20px}
+.pred-item{padding:10px 0;border-bottom:1px solid var(--border2);font-family:var(--mono);font-size:12px}
+.pred-item:last-child{border-bottom:none}
+.pred-label{color:var(--muted);font-size:10px;letter-spacing:1px;margin-bottom:4px}
+.pred-value{font-size:18px;font-weight:600}
+.pred-ok{color:var(--accent2)}.pred-warn{color:var(--warn)}.pred-danger{color:var(--danger)}.pred-blue{color:var(--accent)}
+.reco-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px}
+.reco-item{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--border2);font-family:var(--mono);font-size:11px;color:var(--text)}
+.reco-item:last-child{border-bottom:none}
+.reco-bullet{color:var(--accent);flex-shrink:0}
+.ai-commands-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px}
+.ai-cmd-tag{display:inline-block;background:rgba(255,64,96,.1);color:var(--danger);border:1px solid rgba(255,64,96,.2);border-radius:4px;font-family:var(--mono);font-size:10px;padding:3px 10px;margin:3px}
+.ai-full-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
 
-    if not _AES_KEY_B64:
-        log.error(
-            "AES_SECRET_KEY manquant dans .env\n"
-            "  Générer : python3 -c \"import os,base64; "
-            "print(base64.b64encode(os.urandom(32)).decode())\"\n"
-            "  Puis ajouter dans .env : AES_SECRET_KEY=<valeur générée>"
-        )
-        return None
+/* ════ HISTORY TABLE ════ */
+.history-card{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px;overflow:auto}
+.hist-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+.hist-table th{color:var(--muted);letter-spacing:1px;padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:9px;text-transform:uppercase}
+.hist-table td{padding:7px 10px;border-bottom:1px solid var(--border2);color:var(--text)}
+.hist-table tr:hover td{background:rgba(0,212,255,.03)}
+.hist-summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.hist-sum-card{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:12px}
+.hist-sum-label{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:2px;margin-bottom:6px}
+.hist-sum-value{font-family:var(--mono);font-size:18px;color:var(--accent)}
 
-    try:
-        key = base64.b64decode(_AES_KEY_B64)
-        if len(key) != 32:
-            log.error(
-                "AES_SECRET_KEY invalide : %d bytes trouvés, 32 requis (256 bits)",
-                len(key),
-            )
-            return None
-        log.info(
-            "AES-256-GCM activé\n"
-            "  Source      : AES_SECRET_KEY (.env)\n"
-            "  Longueur    : %d bytes (%d bits)\n"
-            "  Algorithme  : AES-256-GCM (chiffrement authentifié)\n"
-            "  AAD (sel)   : AES_SALT (.env)",
-            len(key), len(key) * 8,
-        )
-        return key
-    except Exception as exc:
-        log.error("Erreur décodage AES_SECRET_KEY depuis .env : %s", exc)
-        return None
+/* ════ SECTION TITLES ════ */
+.section-title{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:3px;text-transform:uppercase;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.section-title::after{content:'';flex:1;height:1px;background:var(--border2)}
+.section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.refresh-btn{font-family:var(--mono);font-size:10px;color:var(--muted);background:transparent;border:1px solid var(--border2);border-radius:4px;padding:4px 10px;cursor:pointer;transition:all .15s}
+.refresh-btn:hover{color:var(--accent);border-color:var(--accent)}
 
+/* ════ CHATBOT ════ */
+.chat-container{display:flex;flex-direction:column;height:calc(100vh - 180px);min-height:400px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;overflow:hidden}
+.chat-header{padding:14px 20px;border-bottom:1px solid var(--border2);display:flex;align-items:center;gap:12px;flex-shrink:0}
+.chat-header-icon{font-size:20px;color:var(--accent)}
+.chat-header-title{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:2px;flex:1}
+.chat-status{font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:20px}
+.chat-status-gemma{background:rgba(0,212,255,.1);color:var(--accent);border:1px solid rgba(0,212,255,.2)}
+.chat-status-fallback{background:rgba(255,176,32,.1);color:var(--warn);border:1px solid rgba(255,176,32,.2)}
+.chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+.chat-messages::-webkit-scrollbar{width:4px}
+.chat-messages::-webkit-scrollbar-track{background:var(--bg3)}
+.chat-messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.chat-msg{max-width:85%;animation:fadeIn .2s ease}
+.chat-msg-user{align-self:flex-end}
+.chat-msg-ai{align-self:flex-start}
+.chat-bubble{padding:10px 14px;border-radius:10px;font-family:var(--mono);font-size:12px;line-height:1.6;word-break:break-word}
+.chat-bubble-user{background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.2);color:var(--text);border-bottom-right-radius:3px}
+.chat-bubble-ai{background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-bottom-left-radius:3px}
+.chat-bubble-system{background:rgba(0,255,157,.06);border:1px solid rgba(0,255,157,.15);color:var(--accent2);font-size:11px;border-radius:6px}
+.chat-meta{font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:4px}
+.chat-meta-user{text-align:right}
+.chat-typing{display:flex;align-items:center;gap:6px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;border-bottom-left-radius:3px;align-self:flex-start}
+.typing-dot{width:5px;height:5px;background:var(--accent);border-radius:50%;animation:typingBounce .8s ease-in-out infinite}
+.typing-dot:nth-child(2){animation-delay:.15s}
+.typing-dot:nth-child(3){animation-delay:.3s}
+@keyframes typingBounce{0%,80%,100%{transform:scale(.8);opacity:.5}40%{transform:scale(1.1);opacity:1}}
+.chat-input-area{border-top:1px solid var(--border2);padding:14px 16px;display:flex;gap:8px;align-items:flex-end;flex-shrink:0;background:var(--bg2)}
+.chat-input{flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:10px 14px;color:var(--text);font-family:var(--mono);font-size:13px;outline:none;resize:none;max-height:100px;min-height:42px;transition:border-color .2s;line-height:1.4}
+.chat-input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(0,212,255,.06)}
+.chat-input::placeholder{color:#2a4a6a}
+.chat-send-btn{background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.3);border-radius:8px;padding:10px 18px;color:var(--accent);font-family:var(--mono);font-size:12px;cursor:pointer;transition:all .2s;white-space:nowrap;letter-spacing:1px;flex-shrink:0}
+.chat-send-btn:hover{background:rgba(0,212,255,.2);box-shadow:0 0 12px rgba(0,212,255,.15)}
+.chat-send-btn:disabled{opacity:.35;cursor:not-allowed}
+.chat-suggestions{display:flex;gap:8px;flex-wrap:wrap;padding:0 16px 10px;flex-shrink:0}
+.chat-suggestion{font-family:var(--mono);font-size:10px;color:var(--muted);background:var(--bg3);border:1px solid var(--border2);border-radius:20px;padding:4px 12px;cursor:pointer;transition:all .15px;letter-spacing:.5px}
+.chat-suggestion:hover{color:var(--accent);border-color:rgba(0,212,255,.3)}
 
-_AES_KEY = _load_aes_key()
+/* ════ THEME TOGGLE ════ */
+.theme-toggle{background:transparent;border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--muted);font-family:var(--mono);font-size:13px;cursor:pointer;transition:all .2s;line-height:1}
+.theme-toggle:hover{color:var(--accent);border-color:var(--accent)}
 
+/* ════ LIGHT MODE ════ */
+html.light{
+  --bg:      #f0f4f8;
+  --bg2:     #ffffff;
+  --bg3:     #e4ecf5;
+  --bg4:     #d8e4f0;
+  --accent:  #0077aa;
+  --accent2: #00895e;
+  --danger:  #cc2040;
+  --warn:    #b87200;
+  --ok:      #00895e;
+  --border:  rgba(0,119,170,0.30);
+  --border2: rgba(0,119,170,0.15);
+  --text:    #1a2a3a;
+  --muted:   #507090;
+}
+html.light body::before{background-image:linear-gradient(rgba(0,119,170,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(0,119,170,.05) 1px,transparent 1px);background-size:40px 40px}
+html.light body::after{background:linear-gradient(transparent,rgba(0,119,170,.05),transparent)}
+html.light .sidebar-section{color:#9ab0c5}
+html.light .field-input::placeholder,
+html.light .chat-input::placeholder{color:#8aabb8}
+html.light .login-card::before{background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+html.light .hist-table tr:hover td{background:rgba(0,119,170,.05)}
+html.light .chat-mic-btn { background: rgba(0,119,170,.08); border-color: rgba(0,119,170,.25); }
+html.light .chat-mic-btn.recording { background: rgba(204,32,64,.1); }
+</style>
+</head>
+<body>
 
-# ── Chiffrement / Déchiffrement AES-256-GCM ───────────────────────────────────
+<!-- ════ LOGIN ════ -->
+<div class="page active" id="login-page">
+  <div class="login-container">
+    <div class="login-logo">
+      <div class="hex-ring"><span class="hex-icon">⬡</span></div>
+      <div class="login-title" style="margin-top:12px">GNL Edge Monitor</div>
+      <div class="login-sub">Système IoT Distribué — M2 RSID 2025-2026</div>
+    </div>
 
-def _aes_encrypt(plaintext: str) -> str:
-    """
-    Chiffre avec AES-256-GCM (clé depuis .env).
-    Format retourné : base64( nonce[12] + ciphertext + tag[16] )
-    """
-    if _AES_KEY is None:
-        return plaintext
+    <div class="login-card">
+      <div class="loading-bar"></div>
+      <div style="margin-bottom:1.25rem">
+        <div class="field-label">RÔLE SYSTÈME</div>
+        <div class="role-select">
+          <div class="role-btn selected" onclick="selectRole(this,'admin')">
+            <span class="role-icon">◈</span>Administrateur
+          </div>
+          <div class="role-btn" onclick="selectRole(this,'operator')">
+            <span class="role-icon">◉</span>Opérateur
+          </div>
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="field-label">IDENTIFIANT</label>
+        <div class="field-wrap">
+          <span class="field-icon">▸</span>
+          <input class="field-input" id="username" type="text" placeholder="nouar" autocomplete="off">
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="field-label">MOT DE PASSE</label>
+        <div class="field-wrap">
+          <span class="field-icon">◈</span>
+          <input class="field-input" id="password" type="password" placeholder="••••••••">
+        </div>
+      </div>
+      <button class="login-btn" id="login-btn" onclick="doLogin()">CONNEXION</button>
+      <div class="login-error" id="login-error">✕ Identifiants incorrects — Accès refusé</div>
+      <div class="ngrok-badge">🌐 API : <span id="api-url-display">détection…</span></div>
+      <div class="status-bar">
+        <div class="status-dot dot-green"></div>
+        <div class="status-txt" id="api-status">VÉRIFICATION API…</div>
+        <div class="status-dot dot-blue"></div>
+        <div class="status-txt">ISOLATION FOREST</div>
+        <div class="status-dot dot-warn"></div>
+        <div class="status-txt">IA EN ÉCOUTE</div>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:1rem;font-family:var(--mono);font-size:10px;color:#1e3a5f;letter-spacing:2px">
+      RPi4 EDGE · SQLite · AnomalyEngine v2.1 · SmartAI Fallback
+    </div>
+  </div>
+</div>
 
-    aesgcm = AESGCM(_AES_KEY)
-    nonce  = os.urandom(12)    # 96 bits — recommandé NIST SP 800-38D
-    ct     = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), _AES_SALT)
-    return base64.b64encode(nonce + ct).decode("utf-8")
+<!-- ════ DASHBOARD ════ -->
+<div class="page" id="dash-page">
+  <nav class="topnav">
+    <div class="nav-brand">
+      <div class="nav-dot"></div>
+      <span class="nav-title">GNL EDGE MONITOR</span>
+      <span style="font-family:var(--mono);font-size:10px;color:#1e3a5f;letter-spacing:2px;margin-left:8px">v2.1.0</span>
+    </div>
+    <div class="nav-right">
+      <div id="api-indicator" class="api-indicator api-ok">● API OK</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted)" id="clock">00:00:00</div>
+      <button class="theme-toggle" id="theme-toggle-btn" onclick="toggleTheme()" title="Basculer mode clair/sombre">☀</button>
+      <div class="nav-user">
+        <div class="user-avatar" id="user-initial">A</div>
+        <span id="user-name">admin</span>
+      </div>
+      <button class="logout-btn" onclick="doLogout()">DÉCONNEXION</button>
+    </div>
+  </nav>
 
+  <div class="dash-body">
+    <!-- ═ SIDEBAR ═ -->
+    <aside class="sidebar">
+      <div class="sidebar-section">Surveillance</div>
+      <div class="sidebar-item active" onclick="switchView('overview',this)">
+        <span class="sidebar-icon">◈</span>Dashboard
+      </div>
+      <div class="sidebar-item" onclick="switchView('alerts',this)">
+        <span class="sidebar-icon">▲</span>Alertes
+        <span class="sidebar-badge" id="alert-count">0</span>
+      </div>
+      <div class="sidebar-section">Intelligence IA</div>
+      <div class="sidebar-item" onclick="switchView('ia',this)">
+        <span class="sidebar-icon">⬡</span>IA / Prédiction
+      </div>
+      <div class="sidebar-item" onclick="switchView('chatbot',this)">
+        <span class="sidebar-icon">◈</span>Chatbot Gemma
+      </div>
+      <div class="sidebar-section">Contrôle</div>
+      <div class="sidebar-item" onclick="switchView('control',this)">
+        <span class="sidebar-icon">◉</span>Contrôle Manuel
+      </div>
+      <div class="sidebar-section">Historique</div>
+      <div class="sidebar-item" onclick="switchView('history',this)">
+        <span class="sidebar-icon">◇</span>Historique DB
+      </div>
+      <div class="sidebar-item" onclick="switchView('events',this)">
+        <span class="sidebar-icon">▸</span>Événements
+      </div>
+      <div class="sidebar-section">Réseau</div>
+      <div class="sidebar-item" onclick="switchView('network',this)">
+        <span class="sidebar-icon">◌</span>État Système
+      </div>
+    </aside>
 
-def _aes_decrypt(token: str) -> str:
-    """
-    Déchiffre un token AES-256-GCM (clé depuis .env).
-    Retourne "" si token invalide ou modifié (GCM authentification échouée).
-    """
-    if _AES_KEY is None:
-        return token
+    <!-- ═ MAIN ═ -->
+    <main class="main-content">
 
-    try:
-        raw    = base64.b64decode(token.encode("utf-8"))
-        nonce  = raw[:12]
-        ct     = raw[12:]
-        aesgcm = AESGCM(_AES_KEY)
-        return aesgcm.decrypt(nonce, ct, _AES_SALT).decode("utf-8")
-    except Exception:
-        return ""
+      <!-- ── VUE OVERVIEW ── -->
+      <div id="view-overview" class="view active">
+        <div class="metrics-grid">
+          <div class="metric-card mc-green">
+            <span class="mc-badge badge-ok" id="badge-n1">NORMAL</span>
+            <div class="mc-label">NIVEAU R1</div>
+            <div class="mc-value" id="d-n1">--</div>
+            <div class="mc-sub">Réservoir source</div>
+          </div>
+          <div class="metric-card mc-blue">
+            <span class="mc-badge badge-ok" id="badge-n2">NORMAL</span>
+            <div class="mc-label">NIVEAU R2</div>
+            <div class="mc-value" id="d-n2">--</div>
+            <div class="mc-sub">Réservoir destination</div>
+          </div>
+          <div class="metric-card mc-green">
+            <span class="mc-badge badge-ok" id="badge-gaz">SÉCURISÉ</span>
+            <div class="mc-label">GAZ MQ-4</div>
+            <div class="mc-value" id="d-gaz">--</div>
+            <div class="mc-sub">Méthane CH₄ (ADC)</div>
+          </div>
+          <div class="metric-card mc-blue">
+            <span class="mc-badge badge-ok" id="badge-ia">NOMINAL</span>
+            <div class="mc-label">SCORE IA</div>
+            <div class="mc-value" id="d-ia">--</div>
+            <div class="mc-sub">Risque anomalie</div>
+          </div>
+        </div>
 
+        <div class="tanks-row">
+          <div class="tank-card">
+            <div class="tank-title">
+              RÉSERVOIR 1 — SOURCE
+              <span id="pump-badge" style="font-size:9px;padding:2px 8px;border-radius:20px;background:rgba(74,127,168,.1);color:var(--muted);border:1px solid var(--border2)">POMPE --</span>
+            </div>
+            <div class="tank-visual">
+              <div class="tank-cylinder">
+                <div class="tank-fill fill-green" id="fill-r1" style="height:0%"></div>
+              </div>
+              <div class="tank-info">
+                <div class="tank-pct" id="pct-r1">--</div>
+                <div class="tank-stat">HC-SR04: <span style="color:var(--accent2)">actif</span></div>
+                <div class="tank-stat">DS18B20: <span id="t1-val" style="color:var(--accent)">--°C</span></div>
+                <div class="tank-stat">Prédit 5min: <span id="r1-pred" style="color:var(--muted)">--</span></div>
+              </div>
+            </div>
+          </div>
 
-def _verify_password(plain: str, encrypted: str) -> bool:
-    """
-    Vérifie mot de passe contre sa version chiffrée AES-256-GCM.
-    hmac.compare_digest protège contre les timing attacks.
-    """
-    if _AES_KEY is None:
-        return hmac_lib.compare_digest(plain, encrypted)
-    decrypted = _aes_decrypt(encrypted)
-    return hmac_lib.compare_digest(plain, decrypted)
+          <div class="tank-card">
+            <div class="tank-title">
+              RÉSERVOIR 2 — DESTINATION
+              <span id="valve-badge" style="font-size:9px;padding:2px 8px;border-radius:20px;background:rgba(74,127,168,.1);color:var(--muted);border:1px solid var(--border2)">VANNE --</span>
+            </div>
+            <div class="tank-visual">
+              <div class="tank-cylinder">
+                <div class="tank-fill fill-blue" id="fill-r2" style="height:0%"></div>
+              </div>
+              <div class="tank-info">
+                <div class="tank-pct" id="pct-r2" style="color:var(--accent)">--</div>
+                <div class="tank-stat">HC-SR04: <span style="color:var(--accent2)">actif</span></div>
+                <div class="tank-stat">DS18B20: <span id="t2-val" style="color:var(--accent)">--°C</span></div>
+                <div class="tank-stat">Prédit 5min: <span id="r2-pred" style="color:var(--muted)">--</span></div>
+              </div>
+            </div>
+          </div>
 
+          <div class="net-card">
+            <div class="tank-title">CAPTEURS &amp; RÉSEAU</div>
+            <div class="net-row"><span class="net-label">Pression BMP280</span><span class="net-val" id="d-pression">-- hPa</span></div>
+            <div class="net-row"><span class="net-label">Température R1</span><span id="t1-net" class="net-active">--°C</span></div>
+            <div class="net-row"><span class="net-label">Gaz MQ-4</span><span id="gaz-net" class="net-active">-- ADC</span></div>
+            <div class="net-row"><span class="net-label">Score IF</span><span id="if-net" class="net-val">--%</span></div>
+            <div class="net-row"><span class="net-label">Source IA</span><span id="ia-src" class="net-ok">--</span></div>
+            <div class="net-row"><span class="net-label">Tendance Gaz</span><span id="gaz-trend" class="net-val">--</span></div>
+          </div>
+        </div>
 
-# ── Base utilisateurs — mots de passe chiffrés AES-256-GCM ───────────────────
+        <div class="bottom-row">
+          <div class="chart-card">
+            <div class="chart-header">
+              <span class="chart-title-txt">HISTORIQUE NIVEAUX (60 dernières mesures)</span>
+            </div>
+            <canvas id="c-hist" class="chart" width="600" height="140"></canvas>
+          </div>
+          <div class="alerts-card">
+            <div class="section-hdr">
+              <div class="tank-title" style="margin-bottom:0">ALERTES RÉCENTES</div>
+              <button class="refresh-btn" onclick="fetchAlerts()">↻ RAFRAÎCHIR</button>
+            </div>
+            <div id="alerts-mini"></div>
+          </div>
+        </div>
 
-def _build_users() -> dict:
-    """
-    Construit la base utilisateurs.
-    Clé AES lue depuis AES_SECRET_KEY dans .env.
-    Mot de passe jamais stocké en clair après cette fonction.
-    """
-    raw_admin = "hamel"
+        <!-- Diagnostic IA rapide -->
+        <div class="alert-card" style="background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px">
+          <div class="section-hdr">
+            <span class="section-title">DIAGNOSTIC IA TEMPS RÉEL</span>
+            <span id="ia-sev-mini" class="ai-severity sev-info">INFO</span>
+          </div>
+          <div id="ia-diag-mini" style="font-family:var(--mono);font-size:13px;color:var(--text);line-height:1.6">
+            En attente du premier diagnostic…
+          </div>
+        </div>
+      </div>
 
-    if _AES_KEY is not None:
-        encrypted = _aes_encrypt(raw_admin)
-        log.info(
-            "Utilisateur 'nouar' (admin) — mot de passe chiffré AES-256-GCM\n"
-            "  Clé         : AES_SECRET_KEY (.env)\n"
-            "  Mot de passe en clair effacé de la mémoire après chiffrement"
-        )
-    else:
-        encrypted = raw_admin
-        log.warning("Utilisateur 'nouar' — mot de passe stocké en clair (AES indisponible)")
+      <!-- ── VUE IA / PRÉDICTION ── -->
+      <div id="view-ia" class="view">
+        <div class="section-title">ANALYSE INTELLIGENTE — SMART AI</div>
+        <div class="ai-grid">
+          <div class="ai-diag-card">
+            <div id="ia-severity" class="ai-severity sev-info">● INFO</div>
+            <div id="ia-diagnostic" class="ai-diag-text">En attente d'analyse…</div>
+            <div id="ia-details" class="ai-details">--</div>
+            <div class="ai-source">Source : <span id="ia-source">--</span> &nbsp;|&nbsp; Mis à jour : <span id="ia-ts">--</span></div>
+          </div>
+          <div class="pred-card">
+            <div class="section-hdr" style="margin-bottom:12px">
+              <span class="section-title">PRÉDICTIONS 5MIN</span>
+            </div>
+            <div class="pred-item">
+              <div class="pred-label">R1 DANS 5 MIN</div>
+              <div class="pred-value pred-blue" id="pred-r1">--</div>
+            </div>
+            <div class="pred-item">
+              <div class="pred-label">R2 DANS 5 MIN</div>
+              <div class="pred-value pred-blue" id="pred-r2">--</div>
+            </div>
+            <div class="pred-item">
+              <div class="pred-label">TEMPS AVANT R2 PLEIN</div>
+              <div class="pred-value pred-warn" id="pred-t-plein">--</div>
+            </div>
+            <div class="pred-item">
+              <div class="pred-label">TEMPS AVANT R1 VIDE</div>
+              <div class="pred-value pred-warn" id="pred-t-vide">--</div>
+            </div>
+            <div class="pred-item">
+              <div class="pred-label">TENDANCE GAZ</div>
+              <div class="pred-value pred-ok" id="pred-gaz-trend">--</div>
+            </div>
+            <div class="pred-item">
+              <div class="pred-label">AUTONOMIE ESTIMÉE</div>
+              <div class="pred-value pred-blue" id="pred-autonomie">--</div>
+            </div>
+          </div>
+        </div>
 
-    return {
-        "nouar": {
-            "password":  encrypted,
-            "role":      "admin",
-            "encrypted": _AES_KEY is not None,
-        },
+        <div class="ai-full-row">
+          <div class="reco-card" style="grid-column:1/3">
+            <div class="section-hdr" style="margin-bottom:10px">
+              <span class="section-title">RECOMMANDATIONS IA</span>
+            </div>
+            <div id="ia-recos">
+              <div class="reco-item"><span class="reco-bullet">▸</span>En attente d'analyse…</div>
+            </div>
+          </div>
+          <div class="ai-commands-card">
+            <div class="section-hdr" style="margin-bottom:10px">
+              <span class="section-title">COMMANDES GÉNÉRÉES</span>
+            </div>
+            <div id="ia-cmds">
+              <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">Aucune commande</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scores IA -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+          <div class="metric-card mc-blue">
+            <div class="mc-label">ISOLATION FOREST</div>
+            <div class="mc-value" id="ia-if-score">--</div>
+            <div class="mc-sub">Score anomalie multivarié</div>
+          </div>
+          <div class="metric-card mc-warn">
+            <div class="mc-label">RISQUE GLOBAL</div>
+            <div class="mc-value" id="ia-risk">--</div>
+            <div class="mc-sub">Agrégé IF + prédictions + gaz</div>
+          </div>
+          <div class="metric-card mc-green">
+            <div class="mc-label">ALERTE GAZ</div>
+            <div class="mc-value" id="ia-gas-alert" style="font-size:16px;padding-top:8px">AUCUNE</div>
+            <div class="mc-sub">MQ-4 σ×2 adaptatif</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VUE CONTRÔLE MANUEL ── -->
+      <div id="view-control" class="view">
+        <div class="section-title">CONTRÔLE MANUEL — ACTIONNEURS</div>
+        <div id="ctrl-auth-warn" style="display:none;background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.3);border-radius:8px;padding:12px 16px;font-family:var(--mono);font-size:11px;color:var(--warn)">
+          ⚠ Contrôle manuel réservé aux administrateurs
+        </div>
+        <div class="control-grid">
+          <div class="control-card">
+            <div class="ctrl-title">◉ POMPE</div>
+            <div class="ctrl-status" id="ctrl-pump-status">--</div>
+            <div class="ctrl-btns">
+              <button class="ctrl-btn btn-on" onclick="sendCtrlCmd('pompe','ON')">▶ DÉMARRER</button>
+              <button class="ctrl-btn btn-off" onclick="sendCtrlCmd('pompe','OFF')">■ ARRÊTER</button>
+            </div>
+            <div class="cmd-feedback" id="fb-pompe"></div>
+          </div>
+          <div class="control-card">
+            <div class="ctrl-title">⬡ VANNE PRINCIPALE</div>
+            <div class="ctrl-status" id="ctrl-valve-status">--</div>
+            <div class="ctrl-btns">
+              <button class="ctrl-btn btn-open" onclick="sendCtrlCmd('vanne','OPEN')">▲ OUVRIR</button>
+              <button class="ctrl-btn btn-close" onclick="sendCtrlCmd('vanne','CLOSE')">▼ FERMER</button>
+            </div>
+            <div class="cmd-feedback" id="fb-vanne"></div>
+          </div>
+          <div class="esd-card">
+            <div class="esd-title">⚠ ARRÊT D'URGENCE — ESD</div>
+            <div class="esd-desc">
+              Coupe immédiatement pompe + vanne + envoie CMD:ESD à l'Arduino.<br>
+              Action irréversible — requiert redémarrage manuel du système.
+            </div>
+            <button class="btn-esd" onclick="triggerESD()">⚡ DÉCLENCHER ESD</button>
+            <div class="cmd-feedback" id="fb-esd"></div>
+          </div>
+        </div>
+
+        <!-- Dernières commandes exécutées -->
+        <div class="alerts-card">
+          <div class="section-hdr">
+            <span class="section-title">DERNIÈRES COMMANDES</span>
+            <button class="refresh-btn" onclick="fetchEvents()">↻</button>
+          </div>
+          <div id="events-ctrl-list">
+            <div class="alert-row">
+              <span class="alert-msg" style="color:var(--muted)">Aucune commande aujourd'hui</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VUE ALERTES ── -->
+      <div id="view-alerts" class="view">
+        <div class="section-title">JOURNAL ALERTES COMPLET</div>
+        <div class="alerts-card" style="max-height:600px;overflow-y:auto">
+          <div id="alerts-full-list">
+            <div class="alert-row">
+              <span class="alert-msg" style="color:var(--muted)">Chargement…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VUE HISTORIQUE DB ── -->
+      <div id="view-history" class="view">
+        <div class="section-title">HISTORIQUE CAPTEURS — BASE DE DONNÉES</div>
+        <div class="hist-summary-grid" id="hist-summary"></div>
+        <div class="history-card">
+          <div class="section-hdr">
+            <span class="section-title">LECTURES DU JOUR</span>
+            <button class="refresh-btn" onclick="fetchHistory()">↻ CHARGER</button>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="hist-table">
+              <thead>
+                <tr>
+                  <th>HEURE</th>
+                  <th>R1 (%)</th>
+                  <th>R2 (%)</th>
+                  <th>TEMP (°C)</th>
+                  <th>PRESSION</th>
+                  <th>GAZ ADC</th>
+                  <th>POMPE</th>
+                  <th>VANNE</th>
+                </tr>
+              </thead>
+              <tbody id="hist-tbody">
+                <tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Cliquer "CHARGER" pour afficher l'historique</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="history-card">
+          <div class="section-hdr" style="margin-bottom:12px">
+            <span class="section-title">DIAGNOSTICS IA DU JOUR</span>
+            <button class="refresh-btn" onclick="fetchDiagnostics()">↻</button>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="hist-table">
+              <thead>
+                <tr><th>HEURE</th><th>SÉVÉRITÉ</th><th>DIAGNOSTIC</th><th>SOURCE</th><th>R1</th><th>R2</th><th>GAZ</th></tr>
+              </thead>
+              <tbody id="diag-tbody">
+                <tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">Cliquer ↻ pour charger</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VUE ÉVÉNEMENTS ── -->
+      <div id="view-events" class="view">
+        <div class="section-title">ÉVÉNEMENTS &amp; COMMANDES DU JOUR</div>
+        <div class="alerts-card" style="max-height:600px;overflow-y:auto">
+          <div class="section-hdr">
+            <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">ESD, alarmes, commandes manuelles</span>
+            <button class="refresh-btn" onclick="fetchEvents()">↻ ACTUALISER</button>
+          </div>
+          <div id="events-full-list">
+            <div class="alert-row"><span class="alert-msg" style="color:var(--muted)">Chargement…</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VUE RÉSEAU/SYSTÈME ── -->
+      <div id="view-network" class="view">
+        <div class="section-title">ÉTAT DU SYSTÈME</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="net-card">
+            <div class="tank-title">COMPOSANTS ACTIFS</div>
+            <div class="net-row"><span class="net-label">API Flask</span><span class="net-ok" id="sys-api">● EN LIGNE</span></div>
+            <div class="net-row"><span class="net-label">AnomalyEngine</span><span class="net-ok">● ACTIF (IF + Régression)</span></div>
+            <div class="net-row"><span class="net-label">Smart AI</span><span id="sys-ai" class="net-ok">● FALLBACK INTELLIGENT</span></div>
+            <div class="net-row"><span class="net-label">Base de données</span><span class="net-ok">● SQLite LOCAL</span></div>
+            <div class="net-row"><span class="net-label">Source données</span><span id="sys-mode" class="net-active">--</span></div>
+          </div>
+          <div class="net-card">
+            <div class="tank-title">SEUILS DE SÉCURITÉ</div>
+            <div class="net-row"><span class="net-label">Gaz WARN</span><span class="net-val">250 ADC</span></div>
+            <div class="net-row"><span class="net-label">Gaz DANGER → ESD</span><span style="color:var(--danger)">450 ADC</span></div>
+            <div class="net-row"><span class="net-label">Niveau haut</span><span class="net-val">95%</span></div>
+            <div class="net-row"><span class="net-label">Niveau bas (pompe)</span><span class="net-val">10%</span></div>
+            <div class="net-row"><span class="net-label">Risque ESD</span><span style="color:var(--danger)">≥ 85%</span></div>
+            <div class="net-row"><span class="net-label">Confirm. gaz</span><span class="net-val">3 cycles consécutifs</span></div>
+          </div>
+        </div>
+        <div class="net-card" style="margin-top:0">
+          <div class="tank-title">DERNIÈRE LECTURE COMPLÈTE</div>
+          <pre id="raw-data" style="font-family:var(--mono);font-size:10px;color:var(--muted);white-space:pre-wrap;line-height:1.6">En attente…</pre>
+        </div>
+      </div>
+
+      <!-- ── VUE CHATBOT GEMMA ── -->
+      <div id="view-chatbot" class="view">
+        <div class="section-title">ASSISTANT GEMMA — QUESTIONS DIRECTES</div>
+        <div class="chat-container">
+          <div class="chat-header">
+            <span class="chat-header-icon">⬡</span>
+            <span class="chat-header-title">ASSISTANT GNL — GEMMA4 / FALLBACK IA</span>
+            <span id="chat-status" class="chat-status chat-status-fallback">● FALLBACK</span>
+          </div>
+          <div id="chat-messages" class="chat-messages">
+            <div class="chat-msg chat-msg-ai">
+              <div class="chat-bubble chat-bubble-system">
+                Assistant GNL initialisé. Posez vos questions sur l'état du système, les capteurs, les seuils de sécurité ou les commandes.
+                Le contexte temps réel est automatiquement pris en compte.<br>
+                🎤 Dictée vocale disponible — cliquez sur le bouton microphone pour parler.
+              </div>
+            </div>
+          </div>
+          <div class="chat-suggestions">
+            <span class="chat-suggestion" onclick="chatSuggest(this)">Quel est le niveau des réservoirs ?</span>
+            <span class="chat-suggestion" onclick="chatSuggest(this)">Y a-t-il une fuite de gaz ?</span>
+            <span class="chat-suggestion" onclick="chatSuggest(this)">Explique le risque IA actuel</span>
+            <span class="chat-suggestion" onclick="chatSuggest(this)">Quand faut-il arrêter la pompe ?</span>
+            <span class="chat-suggestion" onclick="chatSuggest(this)">Quelle est la pression et température ?</span>
+          </div>
+          <div class="chat-input-area">
+            <textarea
+              id="chat-input"
+              class="chat-input"
+              placeholder="Posez votre question sur le système GNL…"
+              rows="1"
+              onkeydown="chatKeydown(event)"
+              oninput="chatAutoResize(this)"
+            ></textarea>
+            <!--
+              ── Bouton microphone STT ────────────────────────────────────────
+              Flux : clic → MediaRecorder (WAV 16kHz) → /api/v1/audio/transcribe
+                     → llama.cpp /v1/audio/transcriptions → texte injecté dans textarea
+              Animation pulse rouge pendant l'enregistrement (class .recording)
+            -->
+            <span id="mic-timer" class="mic-timer">⬤ REC</span>
+            <button
+              id="chat-mic-btn"
+              class="chat-mic-btn"
+              onclick="chatMicToggle()"
+              title="Dictée vocale — cliquer pour démarrer (30s max)"
+            >🎤</button>
+            <button id="chat-send-btn" class="chat-send-btn" onclick="chatSend()">▶ ENVOYER</button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// CONFIG API
+// ══════════════════════════════════════════════════════════════
+const API_BASE = (() => {
+  const h = window.location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1') return 'http://localhost:5000/api/v1';
+  return `https://${h}/api/v1`;
+})();
+
+const HEADERS_BASE = {
+  'Content-Type':               'application/json',
+  'ngrok-skip-browser-warning': '1',
+};
+
+document.getElementById('api-url-display').textContent =
+  API_BASE.replace('/api/v1', '');
+
+// ══════════════════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════════════════
+let jwtToken     = null;
+let userRole     = 'operator';
+let pollInterval = null;
+let chartData    = { r1: new Array(60).fill(null), r2: new Array(60).fill(null) };
+let latestData   = {};
+
+// ══════════════════════════════════════════════════════════════
+// LOGIN
+// ══════════════════════════════════════════════════════════════
+function selectRole(el, role) {
+  document.querySelectorAll('.role-btn').forEach(b => b.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+async function doLogin() {
+  const u   = document.getElementById('username').value.trim();
+  const p   = document.getElementById('password').value;
+  const btn = document.getElementById('login-btn');
+  if (!u || !p) { showLoginError('Remplir tous les champs'); return; }
+
+  btn.disabled = true; btn.textContent = 'CONNEXION…';
+  document.getElementById('login-error').style.display = 'none';
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST', headers: HEADERS_BASE, body: JSON.stringify({ username: u, password: p }),
+    });
+    if (!res.ok) { showLoginError('Identifiants incorrects'); return; }
+    const data = await res.json();
+    jwtToken = data.token;
+    userRole = data.role;
+
+    document.getElementById('login-page').classList.remove('active');
+    document.getElementById('dash-page').classList.add('active');
+    document.getElementById('user-name').textContent    = u;
+    document.getElementById('user-initial').textContent = u[0].toUpperCase();
+
+    // Masquer contrôles si opérateur
+    if (userRole !== 'admin') {
+      document.getElementById('ctrl-auth-warn').style.display = 'block';
+      document.querySelectorAll('.ctrl-btn, .btn-esd').forEach(b => b.disabled = true);
     }
 
+    startDash();
+  } catch (e) {
+    showLoginError(`Erreur réseau : ${e.message}`);
+  } finally {
+    btn.disabled = false; btn.textContent = 'CONNEXION';
+  }
+}
 
-USERS = _build_users()
+function showLoginError(msg) {
+  const el = document.getElementById('login-error');
+  el.textContent = `✕ ${msg}`; el.style.display = 'block';
+}
 
-_DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "dashboard")
+function doLogout() {
+  jwtToken = null;
+  if (pollInterval) clearInterval(pollInterval);
+  // Arrêter enregistrement si actif
+  if (_micRecording) chatMicStop();
+  document.getElementById('dash-page').classList.remove('active');
+  document.getElementById('login-page').classList.add('active');
+  document.getElementById('username').value = '';
+  document.getElementById('password').value = '';
+}
 
-app   = Flask(__name__, static_folder=None)
-_lock = Lock()
+// ══════════════════════════════════════════════════════════════
+// NAVIGATION SIDEBAR
+// ══════════════════════════════════════════════════════════════
+function switchView(name, el) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + name).classList.add('active');
+  document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+  if (el) el.classList.add('active');
+  // Chargement automatique à l'affichage
+  if (name === 'history')  { fetchHistory(); fetchDiagnostics(); fetchSummary(); }
+  if (name === 'alerts')   { fetchAlerts(); }
+  if (name === 'events')   { fetchEvents(); }
+  if (name === 'network')  { updateNetworkView(); }
+}
 
+// ══════════════════════════════════════════════════════════════
+// FETCH HELPERS
+// ══════════════════════════════════════════════════════════════
+async function apiGet(endpoint) {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    headers: { ...HEADERS_BASE, 'Authorization': `Bearer ${jwtToken}` },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
 
-def _cors_origins():
-    return [
-        PUBLIC_URL,
-        "http://localhost:5000",
-        "http://127.0.0.1:5000",
-        r"https://.*\.app\.github\.dev",
-        r"https://.*\.preview\.app\.github\.dev",
-    ]
+async function apiPost(endpoint, body) {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { ...HEADERS_BASE, 'Authorization': `Bearer ${jwtToken}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.description || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
 
+// ══════════════════════════════════════════════════════════════
+// POLLING TEMPS RÉEL
+// ══════════════════════════════════════════════════════════════
+async function fetchLatest() {
+  try {
+    const data = await apiGet('/data/latest');
+    latestData = data;
+    updateOverview(data);
+    updateAIPanel(data);
+    document.getElementById('api-indicator').className = 'api-indicator api-ok';
+    document.getElementById('api-indicator').textContent = '● API OK';
+  } catch(e) {
+    document.getElementById('api-indicator').className = 'api-indicator api-err';
+    document.getElementById('api-indicator').textContent = '● API ERR';
+  }
+}
 
-CORS(app, resources={r"/*": {"origins": _cors_origins(), "supports_credentials": True}})
+// ══════════════════════════════════════════════════════════════
+// MISE À JOUR OVERVIEW
+// ══════════════════════════════════════════════════════════════
+function updateOverview(data) {
+  const n1  = data.niveau?.r1    ?? 0;
+  const n2  = data.niveau?.r2    ?? 0;
+  const gaz = data.gaz?.adc      ?? 0;
+  const ia  = data.ia?.global_risk ?? 0;
+  const t1  = data.temperature?.r1 ?? 0;
+  const t2  = data.temperature?.r2 ?? -127;
+  const p   = data.pression ?? 0;
+  const pump = data.actuateurs?.pompe ?? 0;
+  const valve= data.actuateurs?.vanne ?? 0;
+  const preds = data.smart_ai?.predictions ?? {};
 
-# État partagé
-_latest_data:       dict = {}
-_alerts:            list = []
-_smart_diagnostic:  dict = {}
-_mongo             = None
-_smart_ai          = None
+  // Métriques principales
+  setText('d-n1',  `${Math.round(n1)}%`);
+  setText('d-n2',  `${Math.round(n2)}%`);
+  setText('d-gaz', gaz);
+  setText('d-ia',  `${Math.round(ia)}%`);
+  setText('d-pression', `${p.toFixed(1)} hPa`);
 
+  // Badges
+  setBadge('badge-n1',  n1 < 10 || n1 > 95 ? 'DANGER' : n1 > 88 ? 'WARN' : 'OK');
+  setBadge('badge-n2',  n2 > 95 ? 'DANGER' : n2 > 88 ? 'WARN' : 'OK');
+  setBadge('badge-gaz', gaz >= 450 ? 'DANGER' : gaz >= 250 ? 'WARN' : 'OK');
+  setBadge('badge-ia',  ia >= 85 ? 'DANGER' : ia >= 60 ? 'WARN' : 'OK');
 
-def set_mongo(mongo_writer):
-    global _mongo
-    _mongo = mongo_writer
+  // Réservoirs
+  const fillR1 = document.getElementById('fill-r1');
+  fillR1.style.height = `${n1}%`;
+  fillR1.className = 'tank-fill ' + (n1 < 10 || n1 > 95 ? 'fill-danger' : n1 > 88 ? 'fill-warn' : 'fill-green');
+  const fillR2 = document.getElementById('fill-r2');
+  fillR2.style.height = `${n2}%`;
+  fillR2.className = 'tank-fill ' + (n2 > 95 ? 'fill-danger' : n2 > 85 ? 'fill-warn' : 'fill-blue');
 
+  setText('pct-r1', `${Math.round(n1)}%`);
+  setText('pct-r2', `${Math.round(n2)}%`);
+  setText('t1-val', t1 !== -127 ? `${t1.toFixed(1)}°C` : 'N/C');
+  setText('t2-val', t2 !== -127 ? `${t2.toFixed(1)}°C` : 'N/C');
 
-def set_smart_ai(smart_ai_instance):
-    global _smart_ai
-    _smart_ai = smart_ai_instance
+  // Prédictions dans les réservoirs
+  const r1_5 = preds.r1_5min;
+  const r2_5 = preds.r2_5min;
+  setText('r1-pred', r1_5 != null ? `${r1_5.toFixed(1)}%` : '--');
+  setText('r2-pred', r2_5 != null ? `${r2_5.toFixed(1)}%` : '--');
 
+  // Badges pompe/vanne
+  const pumpEl = document.getElementById('pump-badge');
+  pumpEl.textContent = pump ? 'POMPE ON' : 'POMPE OFF';
+  pumpEl.style.color = pump ? 'var(--accent2)' : 'var(--muted)';
+  pumpEl.style.borderColor = pump ? 'rgba(0,255,157,.3)' : 'var(--border2)';
+  pumpEl.style.background  = pump ? 'rgba(0,255,157,.08)' : 'rgba(74,127,168,.1)';
 
-# ── Middleware ngrok ────────────────────────────────────────────────────────────
-@app.before_request
-def _ngrok_skip_warning():
-    pass
+  const valveEl = document.getElementById('valve-badge');
+  valveEl.textContent = valve ? 'VANNE OUVERTE' : 'VANNE FERMÉE';
+  valveEl.style.color = valve ? 'var(--accent)' : 'var(--muted)';
 
+  // Réseau/capteurs card
+  setText('t1-net',   t1 !== -127 ? `${t1.toFixed(1)}°C` : 'N/C');
+  setText('gaz-net',  `${gaz} ADC`);
+  setText('if-net',   `${data.ia?.isolation_forest ?? 0}%`);
+  const src = data.smart_ai?.source ?? '--';
+  setText('ia-src',   src);
+  const trendGaz = preds.tendance_gaz ?? '--';
+  setText('gaz-trend', trendGaz === 'hausse' ? '↑ HAUSSE' : trendGaz === 'baisse' ? '↓ BAISSE' : '→ STABLE');
 
-@app.after_request
-def _add_ngrok_header(response):
-    response.headers["ngrok-skip-browser-warning"] = "1"
-    origin = request.headers.get("Origin", "")
-    allowed = (
-        origin == PUBLIC_URL
-        or origin.startswith("http://localhost")
-        or origin.startswith("http://127.0.0.1")
-        or origin.endswith(".app.github.dev")
-        or origin.endswith(".preview.app.github.dev")
-    )
-    if allowed and origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Headers"] = (
-        "Content-Type, Authorization, ngrok-skip-browser-warning"
-    )
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return response
+  // Contrôle manuel - statut
+  setText('ctrl-pump-status',  pump ? 'EN MARCHE ▶' : 'ARRÊTÉE ■');
+  document.getElementById('ctrl-pump-status').style.color = pump ? 'var(--accent2)' : 'var(--warn)';
+  setText('ctrl-valve-status', valve ? 'OUVERTE ▲' : 'FERMÉE ▼');
+  document.getElementById('ctrl-valve-status').style.color = valve ? 'var(--accent)' : 'var(--muted)';
 
+  // Diagnostic IA mini
+  const smart = data.smart_ai ?? {};
+  if (smart.diagnostic) {
+    setText('ia-diag-mini', smart.diagnostic);
+    const miniSev = document.getElementById('ia-sev-mini');
+    miniSev.textContent = smart.severity ?? 'INFO';
+    miniSev.className = 'ai-severity ' + sevClass(smart.severity);
+  }
 
-# ── Helpers auth ────────────────────────────────────────────────────────────────
+  // Chart
+  chartData.r1.push(n1); chartData.r1.shift();
+  chartData.r2.push(n2); chartData.r2.shift();
+  drawChart();
 
-def generate_token(username: str, role: str) -> str:
-    payload = {
-        "sub":  username,
-        "role": role,
-        "iat":  int(time.time()),
-        "exp":  int(time.time()) + JWT_EXPIRY,
+  // Raw data (vue réseau)
+  document.getElementById('raw-data').textContent = JSON.stringify({
+    niveaux: { r1: `${n1}%`, r2: `${n2}%` },
+    temperatures: { r1: `${t1}°C` },
+    pression: `${p} hPa`,
+    gaz: `${gaz} ADC`,
+    actuateurs: { pompe: pump ? 'ON' : 'OFF', vanne: valve ? 'OUVERTE' : 'FERMÉE' },
+    ia: { risk: `${ia}%`, if: `${data.ia?.isolation_forest ?? 0}%` },
+  }, null, 2);
+
+  setText('sys-mode', '● SIMULATION RÉALISTE');
+}
+
+// ══════════════════════════════════════════════════════════════
+// MISE À JOUR PANEL IA
+// ══════════════════════════════════════════════════════════════
+function updateAIPanel(data) {
+  const smart = data.smart_ai ?? {};
+  const ai    = data.ia ?? {};
+  const preds = smart.predictions ?? {};
+
+  // Diagnostic
+  const sev = smart.severity ?? 'INFO';
+  const sevEl = document.getElementById('ia-severity');
+  sevEl.textContent = '● ' + sev;
+  sevEl.className = 'ai-severity ' + sevClass(sev);
+
+  setText('ia-diagnostic', smart.diagnostic ?? '--');
+  setText('ia-details',    smart.details    ?? '--');
+
+  const ts = smart.timestamp ? new Date(smart.timestamp).toLocaleTimeString('fr-FR') : '--';
+  setText('ia-source', smart.source ?? '--');
+  setText('ia-ts',     ts);
+
+  // Prédictions
+  const r1_5 = preds.r1_5min;
+  const r2_5 = preds.r2_5min;
+  const tPlein = preds.temps_avant_plein_r2_min;
+  const tVide  = preds.temps_avant_vide_r1_min;
+  const auto   = smart.autonomie_h;
+
+  setText('pred-r1',     r1_5 != null ? `${r1_5.toFixed(1)}%` : '--');
+  setText('pred-r2',     r2_5 != null ? `${r2_5.toFixed(1)}%` : '--');
+  setText('pred-t-plein', tPlein != null && tPlein > 0 ? `${tPlein.toFixed(0)} min` : (tPlein === -1 ? '—' : '--'));
+  setText('pred-t-vide',  tVide  != null && tVide  > 0 ? `${tVide.toFixed(0)} min`  : (tVide  === -1 ? '—' : '--'));
+  setText('pred-autonomie', auto != null && auto > 0 ? `${auto.toFixed(1)} h` : '—');
+
+  const tg = preds.tendance_gaz;
+  const tgEl = document.getElementById('pred-gaz-trend');
+  tgEl.textContent = tg === 'hausse' ? '↑ HAUSSE' : tg === 'baisse' ? '↓ BAISSE' : '→ STABLE';
+  tgEl.className = 'pred-value ' + (tg === 'hausse' ? 'pred-danger' : tg === 'baisse' ? 'pred-ok' : 'pred-blue');
+
+  // Recommandations
+  const recos = smart.recommendations ?? [];
+  const recoContainer = document.getElementById('ia-recos');
+  if (recos.length > 0) {
+    recoContainer.innerHTML = recos.map(r =>
+      `<div class="reco-item"><span class="reco-bullet">▸</span>${r}</div>`).join('');
+  } else {
+    recoContainer.innerHTML = '<div class="reco-item"><span class="reco-bullet" style="color:var(--accent2)">✓</span>Aucune action requise — système nominal</div>';
+  }
+
+  // Commandes IA
+  const cmds = smart.commands ?? [];
+  const cmdsEl = document.getElementById('ia-cmds');
+  if (cmds.length > 0) {
+    cmdsEl.innerHTML = cmds.map(c =>
+      `<span class="ai-cmd-tag">${c}</span>`).join('');
+  } else {
+    cmdsEl.innerHTML = '<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">✓ Aucune commande générée</span>';
+  }
+
+  // Scores
+  setText('ia-if-score', `${ai.isolation_forest ?? 0}%`);
+  setText('ia-risk',     `${ai.global_risk ?? 0}%`);
+  const gasAlert = ai.gas_alert;
+  const gasEl = document.getElementById('ia-gas-alert');
+  gasEl.textContent = gasAlert ?? 'AUCUNE';
+  gasEl.style.color = gasAlert === 'DANGER_CRITIQUE' ? 'var(--danger)' :
+                      gasAlert === 'ATTENTION'       ? 'var(--warn)'  : 'var(--accent2)';
+}
+
+// ══════════════════════════════════════════════════════════════
+// ALERTES
+// ══════════════════════════════════════════════════════════════
+const SEV_COLORS = {
+  DANGER_CRITIQUE:  { dot: 'var(--danger)', cls: 'badge-danger', lbl: 'DANGER' },
+  DANGER_CONFIRMING:{ dot: 'var(--warn)',   cls: 'badge-warn',   lbl: 'WARN' },
+  SMART_AI_DANGER:  { dot: 'var(--danger)', cls: 'badge-danger', lbl: 'DANGER' },
+  SMART_AI_CRITIQUE:{ dot: 'var(--danger)', cls: 'badge-danger', lbl: 'CRITIQUE' },
+  ATTENTION:        { dot: 'var(--warn)',   cls: 'badge-warn',   lbl: 'WARN' },
+  COMMANDE_MANUELLE:{ dot: 'var(--accent)', cls: '',             lbl: 'CMD' },
+  ANOMALIE:         { dot: 'var(--warn)',   cls: 'badge-warn',   lbl: 'ANOMALIE' },
+};
+
+function renderAlertRow(a) {
+  const c  = SEV_COLORS[a.type] || { dot: 'var(--accent2)', cls: 'badge-ok', lbl: 'INFO' };
+  const ts = new Date(a.timestamp);
+  const t  = ts.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const msg = `${a.type}${a.valeur != null ? ' — ' + a.valeur : ''}`;
+  return `<div class="alert-row">
+    <div class="alert-dot" style="background:${c.dot}"></div>
+    <span class="alert-time">${t}</span>
+    <span class="alert-msg" title="${msg}">${msg}</span>
+    <span class="alert-level ${c.cls}" style="border:1px solid currentColor;flex-shrink:0">${c.lbl}</span>
+  </div>`;
+}
+
+async function fetchAlerts() {
+  try {
+    const data = await apiGet('/alerts');
+    const alerts = data.alerts ?? [];
+    document.getElementById('alert-count').textContent = alerts.filter(a => a.type !== 'COMMANDE_MANUELLE').length;
+    document.getElementById('alerts-mini').innerHTML = alerts.slice(0,6).map(renderAlertRow).join('') ||
+      '<div class="alert-row"><span class="alert-msg" style="color:var(--muted)">Aucune alerte</span></div>';
+    document.getElementById('alerts-full-list').innerHTML = alerts.map(renderAlertRow).join('') ||
+      '<div class="alert-row"><span class="alert-msg" style="color:var(--muted)">Aucune alerte</span></div>';
+  } catch(e) {}
+}
+
+// ══════════════════════════════════════════════════════════════
+// COMMANDES MANUELLES
+// ══════════════════════════════════════════════════════════════
+async function sendCtrlCmd(device, action) {
+  const fbId = 'fb-' + device;
+  try {
+    showFeedback(fbId, 'Envoi…', 'pending');
+    const result = await apiPost(`/cmd/${device}`, { action });
+    showFeedback(fbId, `✓ ${result.command} envoyé`, 'ok');
+    setTimeout(() => fetchLatest(), 500);
+  } catch(e) {
+    showFeedback(fbId, `✕ Erreur: ${e.message}`, 'err');
+  }
+}
+
+async function triggerESD() {
+  if (!confirm('⚠ ARRÊT D\'URGENCE\nCette action va couper pompe + vanne immédiatement.\n\nConfirmer ?')) return;
+  if (!confirm('DERNIÈRE CONFIRMATION\nDéclencher CMD:ESD sur l\'Arduino ?')) return;
+  try {
+    showFeedback('fb-esd', 'Envoi ESD…', 'pending');
+    const result = await apiPost('/cmd/esd', {});
+    showFeedback('fb-esd', `⚡ ${result.command} — Arrêt d'urgence déclenché`, 'ok');
+    setTimeout(() => fetchLatest(), 500);
+  } catch(e) {
+    showFeedback('fb-esd', `✕ Erreur: ${e.message}`, 'err');
+  }
+}
+
+function showFeedback(id, msg, type) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = 'cmd-feedback ' + (type === 'err' ? 'cmd-err' : 'cmd-ok');
+  el.style.display = 'block';
+  if (type !== 'pending') setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+// ══════════════════════════════════════════════════════════════
+// HISTORIQUE BASE DE DONNÉES
+// ══════════════════════════════════════════════════════════════
+async function fetchHistory() {
+  const tbody = document.getElementById('hist-tbody');
+  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:16px">Chargement…</td></tr>';
+  try {
+    const data = await apiGet('/history/today?limit=100');
+    const rows = data.readings ?? [];
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:16px">Aucune donnée pour aujourd\'hui</td></tr>';
+      return;
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
-
-
-def decode_token(token: str) -> dict | None:
-    try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
-
-
-def require_auth(role: str = "operator"):
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            if request.method == "OPTIONS":
-                return jsonify({}), 200
-            auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
-                abort(401, "Token manquant")
-            token = auth_header[7:]
-            payload = decode_token(token)
-            if payload is None:
-                abort(401, "Token invalide ou expiré")
-            if role == "admin" and payload.get("role") != "admin":
-                abort(403, "Droits insuffisants (admin requis)")
-            request.user = payload
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator
-
-
-# ── Endpoints publics ───────────────────────────────────────────────────────────
-
-@app.route("/")
-def serve_dashboard():
-    return send_from_directory(os.path.abspath(_DASHBOARD_DIR), "gnl_dashboard.html")
-
-
-@app.route("/health")
-def health():
-    return jsonify({
-        "status":     "ok",
-        "timestamp":  datetime.now(timezone.utc).isoformat(),
-        "public_url": PUBLIC_URL,
-        "security": {
-            "aes256_gcm": _AES_KEY is not None,
-            "key_source": "AES_SECRET_KEY (.env)" if _AES_KEY is not None else "ABSENT",
-            "algorithm":  "AES-256-GCM" if _AES_KEY is not None else "plain",
-        },
-    })
-
-
-@app.route("/api/v1/auth/login", methods=["POST", "OPTIONS"])
-def login():
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-
-    body     = request.get_json(silent=True) or {}
-    username = body.get("username", "")
-    password = body.get("password", "")
-
-    user = USERS.get(username)
-    if not user:
-        abort(401, "Identifiants incorrects")
-
-    # ── Vérification AES-256-GCM (clé depuis .env) ────────────────────────────
-    if not _verify_password(password, user["password"]):
-        log.warning("Tentative connexion échouée pour '%s'", username)
-        abort(401, "Identifiants incorrects")
-
-    token = generate_token(username, user["role"])
-    log.info(
-        "Connexion réussie : %s (role=%s, AES-256-GCM=%s)",
-        username, user["role"], user["encrypted"],
-    )
-    return jsonify({
-        "token":      token,
-        "role":       user["role"],
-        "expires_in": JWT_EXPIRY,
-        "security":   "AES-256-GCM" if user["encrypted"] else "plain",
-    })
-
-
-# ── Endpoints protégés ─────────────────────────────────────────────────────────
-
-@app.route("/api/v1/status")
-@require_auth("operator")
-def status():
-    with _lock:
-        data = dict(_latest_data)
-    ai = data.get("ai", {})
-    return jsonify({
-        "timestamp":   datetime.now(timezone.utc).isoformat(),
-        "node":        "rpi4_edge",
-        "connected":   bool(data),
-        "global_risk": ai.get("global_risk", 0),
-        "gas_alert":   ai.get("gas_alert"),
-        "pump":        data.get("pump", 0),
-        "valve":       data.get("valve", 0),
-        "public_url":  PUBLIC_URL,
-    })
-
-
-@app.route("/api/v1/data/latest")
-@require_auth("operator")
-def data_latest():
-    with _lock:
-        data = dict(_latest_data)
-        diag = dict(_smart_diagnostic)
-    if not data:
-        return jsonify({"error": "Aucune donnée disponible"}), 503
-    return jsonify({
-        "timestamp":   datetime.now(timezone.utc).isoformat(),
-        "niveau":      {"r1": data.get("n1"), "r2": data.get("n2")},
-        "temperature": {"r1": data.get("t1"), "r2": data.get("t2")},
-        "gaz":         {"adc": data.get("g"), "niveau": _gas_level(data.get("g", 0))},
-        "pression":    data.get("p"),
-        "actuateurs":  {"pompe": data.get("pump"), "vanne": data.get("valve")},
-        "ia":          data.get("ai", {}),
-        "smart_ai":    diag,
-    })
-
-
-@app.route("/api/v1/ai/scores")
-@require_auth("operator")
-def ai_scores():
-    with _lock:
-        ai = _latest_data.get("ai", {})
-    return jsonify({
-        "timestamp":        datetime.now(timezone.utc).isoformat(),
-        "isolation_forest": ai.get("isolation_forest", 0),
-        "global_risk":      ai.get("global_risk", 0),
-        "gas_alert":        ai.get("gas_alert"),
-        "regression":       ai.get("regression", {}),
-    })
-
-
-@app.route("/api/v1/ai/diagnostic")
-@require_auth("operator")
-def ai_diagnostic():
-    with _lock:
-        diag = dict(_smart_diagnostic)
-    if not diag:
-        return jsonify({"error": "Aucun diagnostic disponible"}), 503
-    return jsonify(diag)
-
-
-@app.route("/api/v1/ai/chat", methods=["POST", "OPTIONS"])
-@require_auth("operator")
-def ai_chat():
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-
-    body     = request.get_json(silent=True) or {}
-    question = (body.get("question") or "").strip()
-    if not question:
-        abort(400, "Le champ 'question' est requis")
-    if len(question) > 500:
-        abort(400, "Question trop longue (max 500 caractères)")
-
-    if _smart_ai is None:
-        return jsonify({"error": "Smart AI non initialisé"}), 503
-
-    with _lock:
-        ctx = dict(_latest_data)
-
-    try:
-        answer = _smart_ai.chat(question, sensor_data=ctx)
-        source = "gemma4" if _smart_ai.is_available else "fallback"
-    except Exception as e:
-        log.error("Erreur chatbot : %s", e)
-        answer = "Désolé, une erreur est survenue."
-        source = "error"
-
-    log.info(
-        "Chatbot [%s] Q: %s | A: %s",
-        request.user["sub"], question[:60], answer[:60],
-    )
-    return jsonify({
-        "answer":    answer,
-        "source":    source,
-        "question":  question,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-
-
-# ── Speech-to-Text — Transcription audio via Gemma4 ───────────────────────────
-
-@app.route("/api/v1/audio/transcribe", methods=["POST", "OPTIONS"])
-@require_auth("operator")
-def audio_transcribe():
-    """
-    Reçoit un fichier audio WAV (multipart/form-data, champ 'audio'),
-    le transmet à llama.cpp via /v1/audio/transcriptions (API OpenAI-compatible),
-    et retourne { "text": "..." } au dashboard.
-
-    Flux complet :
-      Dashboard (MediaRecorder WAV)
-        → POST /api/v1/audio/transcribe  (ce endpoint)
-          → POST http://gemma4:8080/v1/audio/transcriptions
-            → { "text": "texte transcrit" }
-              → retourné au dashboard
-
-    Limites :
-      - Taille max : 10 MB (~30 secondes WAV 16 kHz mono)
-      - Timeout    : GEMMA4_TIMEOUT (défaut 45s)
-      - Langue     : français (fr) — modifiable via variable d'env
-    """
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-
-    # ── Vérification module requests ──────────────────────────────────────────
-    if not _HTTP_AVAILABLE:
-        log.error("Module 'requests' manquant — pip install requests")
-        return jsonify({"error": "Dépendance 'requests' manquante côté serveur"}), 503
-
-    # ── Réception du fichier audio ────────────────────────────────────────────
-    if "audio" not in request.files:
-        abort(400, "Champ 'audio' manquant dans la requête multipart")
-
-    audio_file = request.files["audio"]
-    audio_data = audio_file.read()
-    filename   = audio_file.filename or "audio.wav"
-    mime_type  = audio_file.content_type or "audio/wav"
-
-    if len(audio_data) == 0:
-        abort(400, "Fichier audio vide")
-
-    # Limite 10 MB ≈ 30s WAV 16 kHz 16-bit mono
-    if len(audio_data) > 10 * 1024 * 1024:
-        abort(400, "Fichier audio trop volumineux (max 10 MB / 30 secondes)")
-
-    # ── Transmission à llama.cpp ──────────────────────────────────────────────
-    gemma4_host    = os.environ.get("GEMMA4_HOST", "gemma4")
-    gemma4_port    = os.environ.get("GEMMA4_SERVER_PORT", "8080")
-    gemma4_timeout = int(os.environ.get("GEMMA4_TIMEOUT", "45"))
-    stt_lang       = os.environ.get("STT_LANGUAGE", "fr")
-    url = f"http://{gemma4_host}:{gemma4_port}/v1/audio/transcriptions"
-
-    log.info(
-        "STT [%s] → %d bytes (%s) → %s",
-        request.user["sub"], len(audio_data), mime_type, url,
-    )
-
-    try:
-        resp = _http.post(
-            url,
-            files={"file": (filename, audio_data, mime_type)},
-            data={"model": "whisper-1", "language": stt_lang},
-            timeout=gemma4_timeout,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        text   = (result.get("text") or "").strip()
-
-        log.info(
-            "STT [%s] ✓ %d chars transcrit : %s…",
-            request.user["sub"], len(text), text[:60],
-        )
-        return jsonify({"text": text})
-
-    except _http.exceptions.ConnectionError:
-        log.warning("STT : llama.cpp inaccessible (%s)", url)
-        return jsonify({"error": "Serveur Gemma4 non disponible — profil 'ai' actif ?"}), 503
-
-    except _http.exceptions.Timeout:
-        log.warning(
-            "STT : timeout %ds dépassé (%s)",
-            gemma4_timeout, url,
-        )
-        return jsonify({
-            "error": f"Timeout {gemma4_timeout}s — modèle surchargé ou audio trop long"
-        }), 504
-
-    except _http.exceptions.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else 500
-        log.error("STT : llama.cpp HTTP %d — %s", status_code, exc)
-        return jsonify({"error": f"llama.cpp a retourné HTTP {status_code}"}), 502
-
-    except Exception as exc:
-        log.error("STT erreur inattendue : %s", exc)
-        return jsonify({"error": str(exc)}), 500
-
-
-# ── Alertes ────────────────────────────────────────────────────────────────────
-
-@app.route("/api/v1/alerts")
-@require_auth("operator")
-def get_alerts():
-    with _lock:
-        alerts = list(reversed(_alerts[-30:]))
-    return jsonify({"count": len(alerts), "alerts": alerts})
-
-
-# ── Commandes (admin uniquement) ───────────────────────────────────────────────
-
-@app.route("/api/v1/cmd/pompe", methods=["POST", "OPTIONS"])
-@require_auth("admin")
-def cmd_pompe():
-    body   = request.get_json(silent=True) or {}
-    action = body.get("action", "").upper()
-    if action not in ("ON", "OFF"):
-        abort(400, "action doit être ON ou OFF")
-    _register_command(f"CMD:PUMP_{action}", request.user["sub"])
-    return jsonify({"status": "queued", "command": f"CMD:PUMP_{action}"})
-
-
-@app.route("/api/v1/cmd/vanne", methods=["POST", "OPTIONS"])
-@require_auth("admin")
-def cmd_vanne():
-    body   = request.get_json(silent=True) or {}
-    action = body.get("action", "").upper()
-    if action not in ("OPEN", "CLOSE"):
-        abort(400, "action doit être OPEN ou CLOSE")
-    _register_command(f"CMD:VALVE_{action}", request.user["sub"])
-    return jsonify({"status": "queued", "command": f"CMD:VALVE_{action}"})
-
-
-@app.route("/api/v1/cmd/esd", methods=["POST", "OPTIONS"])
-@require_auth("admin")
-def cmd_esd():
-    _register_command("CMD:ESD", request.user["sub"])
-    log.critical("ESD déclenché via API par %s", request.user["sub"])
-    return jsonify({"status": "queued", "command": "CMD:ESD"})
-
-
-# ── File de commandes ──────────────────────────────────────────────────────────
-_cmd_queue: list = []
-
-
-def _register_command(cmd: str, user: str):
-    with _lock:
-        _cmd_queue.append({"cmd": cmd, "user": user, "ts": time.time()})
-        _add_alert("COMMANDE_MANUELLE", cmd, user)
-
-
-def pop_command() -> str | None:
-    with _lock:
-        if _cmd_queue:
-            return _cmd_queue.pop(0)["cmd"]
-    return None
-
-
-def update_latest(data: dict):
-    with _lock:
-        _latest_data.clear()
-        _latest_data.update(data)
-        ai = data.get("ai", {})
-        if ai.get("global_risk", 0) >= 70 or ai.get("gas_alert"):
-            _add_alert(
-                ai.get("gas_alert") or f"RISQUE_{ai.get('global_risk')}",
-                data.get("g"),
-                "auto_ia",
-            )
-
-
-def update_smart_diagnostic(diag: dict):
-    with _lock:
-        _smart_diagnostic.clear()
-        _smart_diagnostic.update(diag)
-        severity = diag.get("severity", "INFO")
-        if severity in ("DANGER", "CRITIQUE"):
-            _add_alert(
-                f"SMART_AI_{severity}",
-                diag.get("diagnostic", ""),
-                diag.get("source", "smart_ai"),
-            )
-
-
-def _add_alert(alert_type: str, value, source: str):
-    _alerts.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "type":      alert_type,
-        "valeur":    value,
-        "source":    source,
-    })
-    if len(_alerts) > 100:
-        _alerts.pop(0)
-
-
-def _gas_level(gas: int) -> str:
-    if gas < 250:
-        return "OK"
-    if gas < 450:
-        return "ATTENTION"
-    return "DANGER"
-
-
-# ── Historique MongoDB ─────────────────────────────────────────────────────────
-
-@app.route("/api/v1/history/today")
-@require_auth("operator")
-def history_today():
-    if _mongo is None or not _mongo.available:
-        return jsonify({"error": "MongoDB non disponible"}), 503
-    limit = min(int(request.args.get("limit", 120)), 500)
-    data  = _mongo.get_today_history(limit=limit)
-    return jsonify({"count": len(data), "readings": data})
-
-
-@app.route("/api/v1/history/diagnostics")
-@require_auth("operator")
-def history_diagnostics():
-    if _mongo is None or not _mongo.available:
-        return jsonify({"error": "MongoDB non disponible"}), 503
-    data = _mongo.get_today_diagnostics()
-    return jsonify({"count": len(data), "diagnostics": data})
-
-
-@app.route("/api/v1/history/events")
-@require_auth("operator")
-def history_events():
-    if _mongo is None or not _mongo.available:
-        return jsonify({"error": "MongoDB non disponible"}), 503
-    data = _mongo.get_today_events()
-    return jsonify({"count": len(data), "events": data})
-
-
-@app.route("/api/v1/history/summary")
-@require_auth("operator")
-def history_summary():
-    if _mongo is None or not _mongo.available:
-        return jsonify({"error": "MongoDB non disponible"}), 503
-    summary = _mongo.get_daily_summary()
-    return jsonify(summary)
-
-
-# ── Démarrage ──────────────────────────────────────────────────────────────────
-
-def start_api_server():
-    log.info(
-        "API REST démarrée sur %s:%d | AES-256-GCM=%s | clé=AES_SECRET_KEY(.env)"
-        " | STT=/api/v1/audio/transcribe | requests=%s",
-        API_HOST, API_PORT, _AES_KEY is not None, _HTTP_AVAILABLE,
-    )
-    app.run(
-        host=API_HOST,
-        port=API_PORT,
-        debug=False,
-        use_reloader=False,
-        threaded=True,
-    )
-
-
-if __name__ == "__main__":
-    start_api_server()
+    tbody.innerHTML = rows.map(r => {
+      const t = new Date(r.ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const gasColor = r.g >= 450 ? 'var(--danger)' : r.g >= 250 ? 'var(--warn)' : 'var(--accent2)';
+      return `<tr>
+        <td>${t}</td>
+        <td style="color:${r.n1>95||r.n1<10?'var(--danger)':r.n1>88?'var(--warn)':'var(--accent2)'}">${r.n1?.toFixed(1) ?? '--'}%</td>
+        <td style="color:${r.n2>95?'var(--danger)':r.n2>88?'var(--warn)':'var(--accent)'}">${r.n2?.toFixed(1) ?? '--'}%</td>
+        <td>${r.t1?.toFixed(1) ?? '--'}°C</td>
+        <td>${r.p?.toFixed(1) ?? '--'} hPa</td>
+        <td style="color:${gasColor}">${r.g ?? '--'}</td>
+        <td style="color:${r.pump?'var(--accent2)':'var(--muted)'}">${r.pump ? 'ON' : 'OFF'}</td>
+        <td style="color:${r.valve?'var(--accent)':'var(--muted)'}">${r.valve ? 'OUVERTE' : 'FERMÉE'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--danger);text-align:center;padding:16px">Erreur: ${e.message}</td></tr>`;
+  }
+}
+
+async function fetchDiagnostics() {
+  const tbody = document.getElementById('diag-tbody');
+  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:12px">Chargement…</td></tr>';
+  try {
+    const data = await apiGet('/history/diagnostics');
+    const rows = data.diagnostics ?? [];
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:12px">Aucun diagnostic</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const t = new Date(r.ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      const c = r.severity === 'CRITIQUE' ? 'var(--danger)' : r.severity === 'DANGER' ? 'var(--danger)' :
+                r.severity === 'ATTENTION' ? 'var(--warn)' : 'var(--accent2)';
+      return `<tr>
+        <td>${t}</td>
+        <td style="color:${c}">${r.severity ?? '--'}</td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis" title="${r.diagnostic}">${r.diagnostic ?? '--'}</td>
+        <td style="color:var(--muted)">${r.source ?? '--'}</td>
+        <td>${r.n1?.toFixed(1) ?? '--'}%</td>
+        <td>${r.n2?.toFixed(1) ?? '--'}%</td>
+        <td>${r.g ?? '--'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {}
+}
+
+async function fetchSummary() {
+  try {
+    const s = await apiGet('/history/summary');
+    if (!s.count) return;
+    document.getElementById('hist-summary').innerHTML = `
+      <div class="hist-sum-card"><div class="hist-sum-label">MESURES AUJOURD'HUI</div><div class="hist-sum-value">${s.count}</div></div>
+      <div class="hist-sum-card"><div class="hist-sum-label">R1 MIN/MAX</div><div class="hist-sum-value" style="font-size:14px">${s.n1_min?.toFixed(0)}% / ${s.n1_max?.toFixed(0)}%</div></div>
+      <div class="hist-sum-card"><div class="hist-sum-label">GAZ MAX</div><div class="hist-sum-value" style="color:${s.g_max>=450?'var(--danger)':s.g_max>=250?'var(--warn)':'var(--accent2)'}">${s.g_max} ADC</div></div>
+      <div class="hist-sum-card"><div class="hist-sum-label">ÉVÉNEMENTS</div><div class="hist-sum-value" style="color:${s.nb_events>0?'var(--warn)':'var(--accent2)'}">${s.nb_events}</div></div>
+    `;
+  } catch(e) {}
+}
+
+async function fetchEvents() {
+  const render = (el) => {
+    apiGet('/history/events').then(data => {
+      const evs = data.events ?? [];
+      if (!evs.length) {
+        el.innerHTML = '<div class="alert-row"><span class="alert-msg" style="color:var(--muted)">Aucun événement aujourd\'hui</span></div>';
+        return;
+      }
+      el.innerHTML = evs.map(e => {
+        const t = new Date(e.ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const isESD = e.type === 'CMD:ESD' || e.type === 'ESD';
+        const isCmd = e.type?.startsWith('CMD:');
+        const dot  = isESD ? 'var(--danger)' : isCmd ? 'var(--accent)' : 'var(--warn)';
+        return `<div class="alert-row">
+          <div class="alert-dot" style="background:${dot}"></div>
+          <span class="alert-time">${t}</span>
+          <span class="alert-msg">${e.type} ${e.detail ? '— ' + e.detail : ''}</span>
+          <span class="alert-level" style="border:1px solid ${dot};color:${dot};font-size:9px;padding:2px 8px;border-radius:20px">${e.type?.split(':')[0] ?? 'EVT'}</span>
+        </div>`;
+      }).join('');
+    }).catch(() => {});
+  };
+  render(document.getElementById('events-full-list'));
+  render(document.getElementById('events-ctrl-list'));
+}
+
+// ══════════════════════════════════════════════════════════════
+// CANVAS CHART
+// ══════════════════════════════════════════════════════════════
+function drawChart() {
+  const cv = document.getElementById('c-hist');
+  if (!cv) return;
+  const W = cv.offsetWidth || 600, H = 140;
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  const isLight = document.documentElement.classList.contains('light');
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = isLight ? '#e4ecf5' : '#0a1628'; ctx.fillRect(0,0,W,H);
+
+  const toY = v => H - 8 - (v / 100) * (H - 16);
+  const toX = (i, n) => 8 + i * (W - 16) / (n - 1);
+
+  // Grid
+  ctx.strokeStyle = isLight ? '#c5d5e8' : '#1e2d4a'; ctx.lineWidth = 0.5;
+  [25, 50, 75].forEach(v => {
+    const y = toY(v);
+    ctx.beginPath(); ctx.moveTo(8, y); ctx.lineTo(W - 8, y); ctx.stroke();
+    ctx.fillStyle = isLight ? '#8aabb8' : '#1e3a5f'; ctx.font = '9px monospace'; ctx.fillText(v + '%', W - 22, y - 2);
+  });
+
+  const lineR1 = isLight ? '#00895e' : '#00ff9d';
+  const lineR2 = isLight ? '#0077aa' : '#00d4ff';
+
+  // Lines
+  [[chartData.r1, lineR1], [chartData.r2, lineR2]].forEach(([data, color]) => {
+    const pts = data.map((v, i) => ({v, i})).filter(x => x.v !== null);
+    if (pts.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    pts.forEach(({v, i}, idx) => {
+      const x = toX(i, data.length), y = toY(v);
+      idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+
+  // Legend
+  ctx.fillStyle = lineR1; ctx.font = '9px monospace'; ctx.fillText('— R1', 10, H - 4);
+  ctx.fillStyle = lineR2; ctx.fillText('— R2', 50, H - 4);
+}
+
+// ══════════════════════════════════════════════════════════════
+// UTILS
+// ══════════════════════════════════════════════════════════════
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function setBadge(id, level) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'mc-badge ' + (level === 'DANGER' ? 'badge-danger' : level === 'WARN' ? 'badge-warn' : 'badge-ok');
+  el.textContent = level === 'DANGER' ? 'DANGER' : level === 'WARN' ? 'ATTENTION' : 'NORMAL';
+}
+
+function sevClass(sev) {
+  if (!sev) return 'sev-info';
+  const s = sev.toUpperCase();
+  if (s === 'CRITIQUE') return 'sev-critique';
+  if (s === 'DANGER')   return 'sev-danger';
+  if (s === 'ATTENTION') return 'sev-attention';
+  return 'sev-info';
+}
+
+function updateNetworkView() {
+  if (latestData.smart_ai) {
+    const src = latestData.smart_ai.source;
+    setText('sys-ai', src === 'gemma4' ? '● GEMMA4 ACTIF' : '● FALLBACK INTELLIGENT');
+  }
+}
+
+function toggleTheme() {
+  const isLight = document.documentElement.classList.toggle('light');
+  document.getElementById('theme-toggle-btn').textContent = isLight ? '🌙' : '☀';
+  localStorage.setItem('gnl-theme', isLight ? 'light' : 'dark');
+  drawChart();
+}
+
+// Restaurer la préférence de thème sauvegardée
+(function() {
+  if (localStorage.getItem('gnl-theme') === 'light') {
+    document.documentElement.classList.add('light');
+    const btn = document.getElementById('theme-toggle-btn');
+    if (btn) btn.textContent = '🌙';
+  }
+})();
+
+function updateClock() {
+  const now = new Date();
+  setText('clock', now.toLocaleTimeString('fr-FR'));
+}
+
+// ══════════════════════════════════════════════════════════════
+// DÉMARRAGE DASHBOARD
+// ══════════════════════════════════════════════════════════════
+function startDash() {
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  fetchLatest();
+  fetchAlerts();
+
+  pollInterval = setInterval(fetchLatest, 2000);
+  setInterval(fetchAlerts, 5000);
+}
+
+// Vérification API au chargement
+(async () => {
+  try {
+    const res = await fetch(API_BASE.replace('/api/v1', '') + '/health', { headers: HEADERS_BASE });
+    if (res.ok) {
+      document.getElementById('api-status').textContent = 'API EN LIGNE ✓';
+    } else {
+      document.getElementById('api-status').textContent = 'API HORS LIGNE';
+    }
+  } catch(e) {
+    document.getElementById('api-status').textContent = 'API NON DÉMARRÉE';
+  }
+})();
+
+// ══════════════════════════════════════════════════════════════
+// CHATBOT GEMMA
+// ══════════════════════════════════════════════════════════════
+let chatBusy = false;
+
+function chatKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
+}
+
+function chatAutoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+}
+
+function chatSuggest(el) {
+  document.getElementById('chat-input').value = el.textContent;
+  chatSend();
+}
+
+async function chatSend() {
+  if (chatBusy) return;
+  const input = document.getElementById('chat-input');
+  const question = input.value.trim();
+  if (!question) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  chatBusy = true;
+  document.getElementById('chat-send-btn').disabled = true;
+
+  chatAppendUser(question);
+  const typingId = chatAppendTyping();
+
+  try {
+    const res = await fetch(`${API_BASE}/ai/chat`, {
+      method: 'POST',
+      headers: { ...HEADERS_BASE, 'Authorization': `Bearer ${jwtToken}` },
+      body: JSON.stringify({ question }),
+    });
+    chatRemoveTyping(typingId);
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      chatAppendAI(`⚠ Erreur : ${err.description || 'HTTP ' + res.status}`, 'error');
+    } else {
+      const data = await res.json();
+      chatAppendAI(data.answer, data.source);
+      // Mise à jour badge statut Gemma
+      const badge = document.getElementById('chat-status');
+      if (data.source === 'gemma4') {
+        badge.textContent = '● GEMMA4';
+        badge.className   = 'chat-status chat-status-gemma';
+      } else {
+        badge.textContent = '● FALLBACK';
+        badge.className   = 'chat-status chat-status-fallback';
+      }
+    }
+  } catch (e) {
+    chatRemoveTyping(typingId);
+    chatAppendAI(`⚠ Erreur réseau : ${e.message}`, 'error');
+  } finally {
+    chatBusy = false;
+    document.getElementById('chat-send-btn').disabled = false;
+    document.getElementById('chat-input').focus();
+  }
+}
+
+function chatAppendUser(text) {
+  const msgs = document.getElementById('chat-messages');
+  const now  = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const div  = document.createElement('div');
+  div.className = 'chat-msg chat-msg-user';
+  div.innerHTML = `
+    <div class="chat-bubble chat-bubble-user">${escapeHtml(text)}</div>
+    <div class="chat-meta chat-meta-user">${now} — ${userRole}</div>
+  `;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function chatAppendAI(text, source) {
+  const msgs = document.getElementById('chat-messages');
+  const now  = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const srcLabel = source === 'gemma4' ? 'Gemma4' : source === 'error' ? 'Erreur' : 'Fallback IA';
+  const div  = document.createElement('div');
+  div.className = 'chat-msg chat-msg-ai';
+  div.innerHTML = `
+    <div class="chat-bubble chat-bubble-ai">${escapeHtml(text)}</div>
+    <div class="chat-meta">${now} — ${srcLabel}</div>
+  `;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function chatAppendTyping() {
+  const msgs = document.getElementById('chat-messages');
+  const id   = 'typing-' + Date.now();
+  const div  = document.createElement('div');
+  div.id = id;
+  div.className = 'chat-typing';
+  div.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return id;
+}
+
+function chatRemoveTyping(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+
+// ══════════════════════════════════════════════════════════════
+// STT — DICTÉE VOCALE
+//
+// Flux :
+//   chatMicToggle()
+//     → chatMicStart()  : getUserMedia → MediaRecorder (audio/webm)
+//     → chatMicStop()   : stopRecorder → chatMicProcess()
+//       → AudioContext.decodeAudioData() : décode le WebM en PCM
+//       → _encodeWav()                   : encode PCM → WAV 16kHz mono
+//       → POST /api/v1/audio/transcribe  : multipart/form-data, champ "audio"
+//         → { "text": "…" }
+//           → injecté dans le textarea du chatbot
+//
+// Pas de dépendance npm — vanilla JS uniquement.
+// ══════════════════════════════════════════════════════════════
+let _micRecorder  = null;
+let _micChunks    = [];
+let _micRecording = false;
+let _micStream    = null;
+let _micTimeout   = null;
+let _micTimerInt  = null;
+let _micElapsed   = 0;
+
+const MIC_MAX_S   = 30;   // limite Gemma4 : 30 secondes audio
+const MIC_MIN_S   = 1;    // ignorer les clics accidentels < 1s
+const STT_SAMPLE  = 16000; // fréquence cible WAV (optimale pour whisper)
+
+function chatMicToggle() {
+  if (_micRecording) {
+    chatMicStop();
+  } else {
+    chatMicStart();
+  }
+}
+
+async function chatMicStart() {
+  // Vérification support navigateur
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    chatAppendAI('⚠ Ce navigateur ne supporte pas la capture audio (WebRTC requis).', 'error');
+    return;
+  }
+  if (!window.MediaRecorder) {
+    chatAppendAI('⚠ Ce navigateur ne supporte pas MediaRecorder.', 'error');
+    return;
+  }
+
+  try {
+    // Contraintes audio optimisées pour la reconnaissance vocale
+    _micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount:     1,
+        sampleRate:       STT_SAMPLE,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl:  true,
+      }
+    });
+  } catch (e) {
+    const msg = e.name === 'NotAllowedError'
+      ? '⚠ Permission microphone refusée — autorisez l\'accès dans le navigateur.'
+      : e.name === 'NotFoundError'
+      ? '⚠ Aucun microphone détecté sur cet appareil.'
+      : `⚠ Microphone indisponible : ${e.message}`;
+    chatAppendAI(msg, 'error');
+    return;
+  }
+
+  // Choisir le meilleur format supporté
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : MediaRecorder.isTypeSupported('audio/webm')
+    ? 'audio/webm'
+    : '';
+
+  _micChunks   = [];
+  _micElapsed  = 0;
+  _micRecorder = mimeType
+    ? new MediaRecorder(_micStream, { mimeType, audioBitsPerSecond: 64000 })
+    : new MediaRecorder(_micStream);
+
+  _micRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) _micChunks.push(e.data);
+  };
+  _micRecorder.onstop = _micProcessAudio;
+
+  _micRecorder.start(200);   // chunks toutes les 200ms
+  _micRecording = true;
+
+  // UI — état enregistrement
+  const btn   = document.getElementById('chat-mic-btn');
+  const timer = document.getElementById('mic-timer');
+  btn.classList.add('recording');
+  btn.title = 'Cliquer pour arrêter';
+  timer.classList.add('visible');
+
+  // Compteur de secondes affiché
+  _micTimerInt = setInterval(() => {
+    _micElapsed++;
+    timer.textContent = `⬤ ${_micElapsed}s`;
+    if (_micElapsed >= MIC_MAX_S) chatMicStop();  // auto-stop 30s
+  }, 1000);
+
+  // Sécurité : auto-stop absolu à 31s
+  _micTimeout = setTimeout(() => {
+    if (_micRecording) chatMicStop();
+  }, (MIC_MAX_S + 1) * 1000);
+}
+
+function chatMicStop() {
+  if (!_micRecording) return;
+  _micRecording = false;
+
+  if (_micTimeout)  { clearTimeout(_micTimeout);   _micTimeout  = null; }
+  if (_micTimerInt) { clearInterval(_micTimerInt);  _micTimerInt = null; }
+
+  // Arrêter MediaRecorder → déclenche onstop → _micProcessAudio
+  if (_micRecorder && _micRecorder.state !== 'inactive') {
+    _micRecorder.stop();
+  }
+  // Libérer le flux micro (éteint l'indicateur rouge du navigateur)
+  if (_micStream) {
+    _micStream.getTracks().forEach(t => t.stop());
+    _micStream = null;
+  }
+
+  // UI — retour état normal
+  const btn   = document.getElementById('chat-mic-btn');
+  const timer = document.getElementById('mic-timer');
+  btn.classList.remove('recording');
+  btn.title = 'Dictée vocale — cliquer pour démarrer (30s max)';
+  timer.classList.remove('visible');
+}
+
+async function _micProcessAudio() {
+  // Enregistrement trop court → ignorer
+  if (_micElapsed < MIC_MIN_S || _micChunks.length === 0) {
+    return;
+  }
+
+  const btn = document.getElementById('chat-mic-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳';
+
+  try {
+    // ── Étape 1 : décoder WebM → PCM float32 via AudioContext ────────────────
+    const webmBlob    = new Blob(_micChunks, { type: _micRecorder.mimeType || 'audio/webm' });
+    const arrayBuffer = await webmBlob.arrayBuffer();
+
+    let wavBlob;
+    try {
+      // AudioContext pour décoder le WebM/Opus en PCM brut
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: STT_SAMPLE,
+      });
+      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+      audioCtx.close();
+
+      // ── Étape 2 : encoder PCM → WAV 16-bit mono ─────────────────────────
+      wavBlob = _encodeWav(decoded, STT_SAMPLE);
+    } catch (decodeErr) {
+      // Fallback : envoyer le WebM directement si AudioContext échoue
+      console.warn('STT: AudioContext decode failed, sending raw WebM:', decodeErr);
+      wavBlob = webmBlob;
+    }
+
+    // ── Étape 3 : POST multipart vers /api/v1/audio/transcribe ──────────────
+    const fd = new FormData();
+    fd.append('audio', wavBlob, 'audio.wav');
+
+    const res = await fetch(`${API_BASE}/audio/transcribe`, {
+      method:  'POST',
+      headers: {
+        'Authorization':           `Bearer ${jwtToken}`,
+        'ngrok-skip-browser-warning': '1',
+        // NE PAS définir Content-Type ici — fetch le génère automatiquement
+        // avec le boundary multipart correct
+      },
+      body: fd,
+    });
+
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errMsg = errJson.error || errJson.description || errMsg;
+      } catch (_) {}
+      chatAppendAI(`⚠ Transcription échouée : ${errMsg}`, 'error');
+      return;
+    }
+
+    const data = await res.json();
+    const text = (data.text || '').trim();
+
+    if (!text) {
+      chatAppendAI('⚠ Aucun texte transcrit — parlez plus fort ou réessayez.', 'error');
+      return;
+    }
+
+    // ── Étape 4 : injecter le texte transcrit dans le champ de saisie ───────
+    const input = document.getElementById('chat-input');
+    input.value = text;
+    chatAutoResize(input);
+    input.focus();
+
+  } catch (e) {
+    chatAppendAI(`⚠ Erreur dictée vocale : ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🎤';
+  }
+}
+
+// ── Encodeur WAV PCM 16-bit mono ────────────────────────────────────────────
+// Pure JS — aucune dépendance externe.
+// Prend un AudioBuffer (multi-canal), mixe en mono, rééchantillonne si besoin,
+// et produit un Blob WAV standard lisible par libsndfile / whisper.
+function _encodeWav(audioBuffer, targetSampleRate) {
+  // Mixer tous les canaux en mono
+  const numChannels = audioBuffer.numberOfChannels;
+  const srcLen      = audioBuffer.length;
+  const mixed       = new Float32Array(srcLen);
+
+  for (let ch = 0; ch < numChannels; ch++) {
+    const chData = audioBuffer.getChannelData(ch);
+    for (let i = 0; i < srcLen; i++) {
+      mixed[i] += chData[i] / numChannels;
+    }
+  }
+
+  // Rééchantillonnage linéaire si la fréquence source diffère
+  let samples = mixed;
+  const srcRate = audioBuffer.sampleRate;
+  if (srcRate !== targetSampleRate) {
+    const ratio   = srcRate / targetSampleRate;
+    const outLen  = Math.floor(srcLen / ratio);
+    const resampled = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const srcIdx = i * ratio;
+      const lo     = Math.floor(srcIdx);
+      const hi     = Math.min(lo + 1, srcLen - 1);
+      const frac   = srcIdx - lo;
+      resampled[i] = mixed[lo] * (1 - frac) + mixed[hi] * frac;
+    }
+    samples = resampled;
+  }
+
+  // Encoder en PCM 16-bit signé little-endian
+  const pcmLen    = samples.length;
+  const dataBytes = pcmLen * 2;          // 2 bytes par sample (16-bit)
+  const buf       = new ArrayBuffer(44 + dataBytes);
+  const view      = new DataView(buf);
+
+  // ── En-tête RIFF/WAVE ─────────────────────────────────────────────────────
+  const wr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+  wr(0,  'RIFF');
+  view.setUint32(4,  36 + dataBytes,     true);  // taille totale - 8
+  wr(8,  'WAVE');
+  wr(12, 'fmt ');
+  view.setUint32(16, 16,                 true);  // taille chunk fmt
+  view.setUint16(20,  1,                 true);  // PCM = 1
+  view.setUint16(22,  1,                 true);  // mono
+  view.setUint32(24, targetSampleRate,   true);  // sampleRate
+  view.setUint32(28, targetSampleRate * 2, true); // byteRate = sampleRate × 2
+  view.setUint16(32,  2,                 true);  // blockAlign = 2
+  view.setUint16(34, 16,                 true);  // bitsPerSample
+  wr(36, 'data');
+  view.setUint32(40, dataBytes,          true);
+
+  // ── Données PCM ───────────────────────────────────────────────────────────
+  let offset = 44;
+  for (let i = 0; i < pcmLen; i++) {
+    // Clamp [-1,1] → int16 [-32768, 32767]
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 32768 : s * 32767, true);
+    offset += 2;
+  }
+
+  return new Blob([buf], { type: 'audio/wav' });
+}
+</script>
+</body>
+</html>
